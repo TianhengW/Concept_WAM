@@ -14,6 +14,12 @@ mot_force_flash_attention: false
 pack_proprio_after_text: true
 action_dit_pretrained_path: null
 
+# CC-WAM Stage 1: concept bottleneck on the action side.
+# K = number of concept slots; lambda_concept = weight of the slot-diversity
+# (orthogonality) regularizer. Set lambda_concept=0.0 to disable the aux loss.
+concept_k: 16
+lambda_concept: 0.01
+
 flux2_lora_config:
   enabled: false
   rank: 16

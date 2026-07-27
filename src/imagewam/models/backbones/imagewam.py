@@ -45,6 +45,8 @@ class ImageWAM(torch.nn.Module):
         omnigen2_online_text_cache_compatible: bool = False,
         qwen_context_len: int = 128,
         pack_proprio_after_text: bool = False,
+        concept_k: int = 16,
+        lambda_concept: float = 0.0,
     ):
         super().__init__()
         self.video_expert = video_expert
@@ -52,6 +54,18 @@ class ImageWAM(torch.nn.Module):
         self.mot = mot
         # Keep trainer compatibility: optimizer and freeze logic use `model.dit`.
         self.dit = self.mot
+        # CC-WAM Stage 1: concept bottleneck on the action side (flux2 stack only).
+        # K concept slots are compressed from the reference-image tokens and
+        # prepended to the action token sequence in `_training_loss_flux2`.
+        self.lambda_concept = float(lambda_concept)
+        self.concept_bottleneck = None
+        if str(stack) == "flux2":
+            from imagewam.models.backbones.concept_bottleneck import ConceptBottleneck
+            self.concept_bottleneck = ConceptBottleneck(
+                dv=int(video_expert.hidden_dim),
+                da=int(action_expert.hidden_dim),
+                K=int(concept_k),
+            ).to(device=device, dtype=torch_dtype)
 
         self.vae = vae
         self.text_encoder = text_encoder
@@ -442,6 +456,8 @@ class ImageWAM(torch.nn.Module):
         flux2_lora_config: Optional[dict[str, Any]] = None,
         qwen3_model_spec: str | None = None,
         qwen_context_len: int = 512,
+        concept_k: int = 16,
+        lambda_concept: float = 0.0,
     ):
         from safetensors.torch import load_file as load_sft
 
@@ -571,6 +587,8 @@ class ImageWAM(torch.nn.Module):
             stack="flux2",
             qwen_context_len=int(qwen_context_len),
             pack_proprio_after_text=bool(pack_proprio_after_text),
+            concept_k=int(concept_k),
+            lambda_concept=float(lambda_concept),
         )
         model.model_paths = {
             "flux2": flux2_model_path,
@@ -2438,24 +2456,51 @@ class ImageWAM(torch.nn.Module):
             action_tokens=noisy_action,
             timestep=self._scheduler_timestep_to_unit(timestep_action, self.train_action_scheduler),
         )
+        # CC-WAM Stage 1: prepend K concept slots to the action token sequence.
+        # video_pre["tokens"]["img"] = [ref(cond) ; target]; the first cond_len
+        # tokens are the reference image -> feed them to the concept bottleneck.
+        action_tokens = action_pre["tokens"]
+        action_ids = action_pre["ids"]
+        n_concept = 0
+        loss_concept = None
+        if self.concept_bottleneck is not None:
+            cond_len = int(video_pre["cond_len"])
+            ref_img = video_pre["tokens"]["img"][:, :cond_len]           # [B, cond_len, dv]
+            c_t = self.concept_bottleneck(ref_img)                        # [B, K, da]
+            n_concept = int(c_t.shape[1])
+            concept_ids = self.concept_bottleneck.build_concept_ids(
+                batch_size, device=action_ids.device, dtype=action_ids.dtype
+            )
+            action_tokens = torch.cat([c_t.to(action_tokens.dtype), action_tokens], dim=1)
+            action_ids = torch.cat([concept_ids, action_ids], dim=1)
+            # concept regularizer (Stage 1 aux loss): keep the K slots diverse so
+            # they don't collapse onto the same concept. Penalize off-diagonal
+            # cosine similarity (-> 0) while pulling the diagonal to 1.
+            if float(self.lambda_concept) > 0.0:
+                c_norm = F.normalize(c_t.float(), dim=-1)                 # [B, K, da]
+                gram = torch.bmm(c_norm, c_norm.transpose(1, 2))         # [B, K, K]
+                eye = torch.eye(n_concept, device=c_t.device).unsqueeze(0)
+                loss_concept = (gram - eye).pow(2).mean()
         attention_mask = self._build_mot_attention_mask_flux2(
             batch_size=batch_size,
             txt_len=int(video_pre["txt_len"]),
             target_len=int(video_pre["target_len"]),
             cond_len=int(video_pre["cond_len"]),
-            action_len=int(action_pre["tokens"].shape[1]),
+            action_len=int(action_tokens.shape[1]),           # = n_concept + action_len
             device=noisy_latent.device,
             text_attention_mask=video_pre["text_mask"],
         )
         tokens_out = self.mot(
-            embeds_all={"video": video_pre["tokens"], "action": action_pre["tokens"]},
+            embeds_all={"video": video_pre["tokens"], "action": action_tokens},
             attention_mask=attention_mask,
             freqs_all={"video": video_pre["freqs"]},
-            context_all={"video": None, "action": {"ids": action_pre["ids"]}},
+            context_all={"video": None, "action": {"ids": action_ids}},
             t_mod_all={"video": video_pre["t_mod"], "action": action_pre["t_mod"]},
         )
         pred_video = self.video_expert.post_dit(tokens_out["video"], video_pre)
-        pred_action = self.action_expert.post_dit(tokens_out["action"], action_pre)
+        # drop the K concept slots before the action head (they are not actions).
+        action_out = tokens_out["action"][:, n_concept:]
+        pred_action = self.action_expert.post_dit(action_out, action_pre)
 
         video_loss_per_sample = F.mse_loss(pred_video.float(), target_video.float(), reduction="none").flatten(1).mean(dim=1)
         video_weight = self.train_video_scheduler.training_weight(timestep_video).to(
@@ -2475,10 +2520,14 @@ class ImageWAM(torch.nn.Module):
         )
         loss_action = (action_loss_per_sample * action_weight).mean()
         loss_total = self.loss_lambda_video * loss_video + self.loss_lambda_action * loss_action
-        return loss_total, {
+        logs = {
             "loss_video": self.loss_lambda_video * float(loss_video.detach().item()),
             "loss_action": self.loss_lambda_action * float(loss_action.detach().item()),
         }
+        if loss_concept is not None:
+            loss_total = loss_total + float(self.lambda_concept) * loss_concept
+            logs["loss_concept"] = float(self.lambda_concept) * float(loss_concept.detach().item())
+        return loss_total, logs
 
     def _training_loss_dim(self, sample, tiled: bool = False):
         inputs = self.build_inputs_dim(sample, tiled=tiled)
@@ -4442,6 +4491,12 @@ class ImageWAM(torch.nn.Module):
         """Refine trainer's default DiT-only policy for parameter-efficient modes."""
         if self.stack != "flux2":
             return
+        # CC-WAM Stage 1: the concept bottleneck lives on ImageWAM (not inside
+        # mot.mixtures), so the trainer's DiT-only policy won't touch it. Unfreeze
+        # it explicitly here.
+        if getattr(self, "concept_bottleneck", None) is not None:
+            self.concept_bottleneck.train()
+            self.concept_bottleneck.requires_grad_(True)
         video_expert = self.mot.mixtures["video"] if "video" in self.mot.mixtures else None
         action_expert = self.mot.mixtures["action"] if "action" in self.mot.mixtures else None
         if action_expert is not None:

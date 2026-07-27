@@ -327,6 +327,8 @@ def create_imagewam_flux2_klein(
     flux2_lora_config=None,
     model_dtype: torch.dtype = torch.bfloat16,
     device: str = "cuda",
+    concept_k: int = 16,
+    lambda_concept: float = 0.0,
 ):
     from .models.backbones.imagewam import ImageWAM
 
@@ -389,6 +391,8 @@ def create_imagewam_flux2_klein(
         mot_force_flash_attention=bool(mot_force_flash_attention),
         pack_proprio_after_text=bool(pack_proprio_after_text),
         flux2_lora_config=flux2_lora_config,
+        concept_k=int(concept_k),
+        lambda_concept=float(lambda_concept),
     )
 
 
