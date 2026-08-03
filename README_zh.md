@@ -15,6 +15,7 @@ ImageWAM 是一组基于图像编辑模型基座的 world action model。本仓�
 ## 目录
 
 - [仓库结构](#仓库结构)
+- [Three-Stream + Latent WAM](#three-stream--latent-wam)
 - [基础安装](#基础安装)
 - [模型准备](#模型准备)
 - [数据准备](#数据准备)
@@ -43,6 +44,75 @@ ImageWAM/
 ```
 
 此外，还需要在本地准备数据集（默认放置在`./data`）、预训练模型权重；生成 ActionDiT 初始化权重（默认放置在./checkpoints/）。
+
+## Three-Stream + Latent WAM（三流 + 潜在推理）
+
+本分支（`latent`）在 FLUX.2-Klein-4B 基座上新增了一个 **三流（图像 + 文本 + 动作）VLA**，
+并带在线 **LatentReasoner（潜在推理）**，在 RoboTwin 上训练，**数据设定与已发布的 ImageWAM
+模型完全一致**（no-op / 非空闲帧过滤，见 [RoboTwin 数据准备](#robotwin)）。
+
+### 架构
+
+- **三流核心** — `src/imagewam/models/backbones/flux2_action_three_stream.py`
+  （`Flux2ActionTransformer2DModel`）：图像流与文本流保持原始 FLUX.2 double/single block
+  （预训练权重原样加载），并在每一层加入一个 bottleneck 的**动作专家（action expert）**参与
+  联合注意力。ImageWAM 可见性 mask 保证：动作只 attend `文本(+state) + 干净上下文 + 自身`，
+  没有任何 token attend 动作，且 prompt 的 padding token 被屏蔽。
+- **LatentReasoner** — `src/imagewam/models/backbones/latent_reasoner.py`：一次 Qwen3-4B
+  前向产出 prompt 表征（第 9/18/27 层拼接 → 7680 维，与 `joint_attention_dim` 对齐），
+  **外加 `num_latent`=16 个 Coconut 风格的潜在推理 token**。其输出直接作为三流的
+  `encoder_hidden_states`（文本流），从而让推理条件化动作专家。
+- **顶层模型 + 损失** — `src/imagewam/models/backbones/flux2_three_stream_model.py`
+  （`ImageWAMThreeStream`）：对目标/上下文帧做 VAE 编码、调用 reasoner、对视频与动作分别加
+  **独立**的 flow-matching 噪声，返回双损失（`loss_video` + `loss_action`）。
+- **运行时工厂** — `imagewam.runtime.create_imagewam_flux2_klein_threestream`。
+
+### 数据（必须与发布设定一致）
+
+按 [RoboTwin 数据准备](#robotwin) 下载 `robotwin2.0-fastwam`，并——最关键地——生成
+**非空闲（no-op）过滤文件**；dataloader 会把采样限制在保留区间内（约保留 89.3% 的帧），
+与发布 recipe 完全相同：
+
+```bash
+ROBOTWIN_ROOT=/path/to/robotwin2.0 bash scripts/data/precompute_noops_lerobot.sh
+# -> ${ROBOTWIN_ROOT}/nonidle_ranges.json   （默认 OpenPI-DROID recipe：idle_l2=1e-3, min_idle_len=5）
+```
+
+任务配置 `configs/task/robotwin_flux2_klein_4b_threestream_latent_imagewam.yaml` 已把
+`data.{train,val}.nonidle_filter_path` 指向该文件，并设 `num_frames=17`、
+`endpoint_frames_only=true`、`compact_288x256` 相机布局、以及数据集自带 `dataset_stats.json`
+的 z-score 归一化——与发布模型逐项一致。
+
+### 训练
+
+```bash
+# 4 节点 x 8 GPU = 32，ZeRO-1，global batch 256（batch 4 x accum 2），10 epoch
+sbatch scripts/flux2/sbatch_threestream_latent_4node.sh
+
+# 单节点冒烟（8 GPU，2 步）
+TASK=robotwin_flux2_klein_4b_threestream_latent_imagewam FLUX2_SRC=/path/to/flux2 \
+  bash scripts/flux2/train_flux2_klein_imagewam.sh 8 \
+  num_epochs=1 max_steps=2 batch_size=1 gradient_accumulation_steps=1 wandb.enabled=false
+```
+
+跨集群时请修改 4 节点脚本里的分区/节点名和 `NCCL_SOCKET_IFNAME` / rendezvous 相关行；
+FLUX.2 transformer / AE / Qwen3 权重路径通过 hydra override
+（`model.flux2_transformer_dir=... model.ae_model_path=... model.qwen3_model_spec=...`）
+或直接编辑 `configs/model/imagewam_flux2_klein_4b_threestream_latent.yaml` 指定。
+
+### 关键文件
+
+| 用途 | 路径 |
+|---|---|
+| 三流 transformer | `src/imagewam/models/backbones/flux2_action_three_stream.py` |
+| LatentReasoner（Qwen3 Coconut）| `src/imagewam/models/backbones/latent_reasoner.py` |
+| 顶层模型 + 双损失 | `src/imagewam/models/backbones/flux2_three_stream_model.py` |
+| 运行时工厂 | `src/imagewam/runtime.py` → `create_imagewam_flux2_klein_threestream` |
+| model / task 配置 | `configs/model/imagewam_flux2_klein_4b_threestream_latent.yaml` · `configs/task/robotwin_flux2_klein_4b_threestream_latent_imagewam.yaml` |
+| 非空闲过滤生成器 | `scripts/data/precompute_noops_lerobot.sh` · `scripts/data/compute_robotwin_nonidle_ranges.py` |
+| 4 节点训练启动器 | `scripts/flux2/sbatch_threestream_latent_4node.sh` |
+| 训练入口 / accelerate | `scripts/train.py` · `scripts/flux2/train_flux2_klein_imagewam.sh` · `scripts/train_zero1.sh` |
+
 
 ## 基础安装
 
