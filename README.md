@@ -1,3 +1,102 @@
+
+---
+
+# Three-Stream + Latent WAM (RoboTwin) — Reproduction Guide
+
+This branch (`latent`) adds a **three-stream (image + text + action) VLA** with an online
+**LatentReasoner** (Qwen3 Coconut-style continuous latent reasoning) on top of the
+FLUX.2-Klein-4B image-editing backbone, trained on RoboTwin **with the exact same data
+setting as the original ImageWAM release** (no-op / non-idle frame filtering).
+
+## 1. Architecture
+
+- **Three-stream core** — `src/imagewam/models/backbones/flux2_action_three_stream.py`
+  (`Flux2ActionTransformer2DModel`): image + text + a bottlenecked **action expert** run
+  jointly inside every FLUX.2 double/single block, with the ImageWAM visibility mask
+  (action attends `text(+state) + clean-context + itself`; nothing attends action; a
+  text-validity mask blocks padded prompt tokens).
+- **LatentReasoner** — `src/imagewam/models/backbones/latent_reasoner.py`: one Qwen3-4B
+  forward produces prompt reps (layers 9/18/27 concat = 7680-d, matches
+  `joint_attention_dim`) **plus 16 appended latent reasoning tokens**. Its output is fed
+  directly as the three-stream `encoder_hidden_states` (the text stream), so reasoning
+  conditions the action expert.
+- **Top-level model / training loss** — `src/imagewam/models/backbones/flux2_three_stream_model.py`
+  (`ImageWAMThreeStream`): VAE-encodes target/context frames, runs the reasoner, adds
+  independent video/action flow-matching noise, and returns the dual loss
+  (`loss_video` + `loss_action`).
+- **Runtime factory** — `imagewam.runtime.create_imagewam_flux2_klein_threestream`.
+
+## 2. Environment
+
+```bash
+# uv-managed; torch 2.7.1+cu118, diffusers 0.39.0, transformers 4.56.1 (all pinned in pyproject.toml)
+uv sync
+```
+
+Prepare (outside the repo) and point env vars at:
+- **FLUX.2-Klein-4B** (diffusers format, needs `transformer/config.json + *.safetensors`) and
+  the **FLUX.2-dev AE** (`ae.safetensors`).
+- **Qwen3-4B**.
+- **flux2 reference source** (`FLUX2_SRC`, only used to import `flux2.autoencoder` for the VAE).
+
+The model config `configs/model/imagewam_flux2_klein_4b_threestream_latent.yaml` holds the
+concrete default paths; override on another machine via hydra
+(`model.flux2_transformer_dir=... model.ae_model_path=... model.qwen3_model_spec=...`) or
+the `FLUX2_SRC` env var.
+
+## 3. Data preparation (must match ImageWAM release)
+
+1. Download the FastWAM-preprocessed RoboTwin 2.0 dataset (LeRobot v2 format):
+   ```bash
+   huggingface-cli download yuanty/robotwin2.0-fastwam --repo-type dataset --local-dir data/robotwin2.0
+   # -> ${ROBOTWIN_ROOT} = data/robotwin2.0/robotwin2.0  (27,500 episodes / ~6.08M frames)
+   ```
+2. **Generate the non-idle (no-op) frame filter** — this is the ImageWAM release data
+   setting; the dataloader restricts sampling to the kept ranges (~89.3% of frames):
+   ```bash
+   ROBOTWIN_ROOT=/path/to/robotwin2.0 bash scripts/data/precompute_noops_lerobot.sh
+   # -> ${ROBOTWIN_ROOT}/nonidle_ranges.json
+   #    (default OpenPI-DROID recipe: idle_l2=1e-3, min_idle_len=5 — matches the release)
+   ```
+   Generator: `scripts/data/compute_robotwin_nonidle_ranges.py`.
+   The task config `configs/task/robotwin_flux2_klein_4b_threestream_latent_imagewam.yaml`
+   sets `data.{train,val}.nonidle_filter_path` to this file, plus `num_frames=17`,
+   `endpoint_frames_only=true`, `robotwin_camera_layout=compact_288x256`, z-score norm from
+   the dataset's own `dataset_stats.json` — identical to the release.
+
+## 4. Training
+
+- **Task config**: `configs/task/robotwin_flux2_klein_4b_threestream_latent_imagewam.yaml`
+  (batch 4 · grad-accum 2 · 10 epochs · nonidle data setting).
+- **4-node launcher** (32 GPUs, ZeRO-1, global batch 256):
+  ```bash
+  sbatch scripts/flux2/sbatch_threestream_latent_4node.sh
+  ```
+- **Single-node / smoke** (e.g. 8 GPUs, 2 steps):
+  ```bash
+  TASK=robotwin_flux2_klein_4b_threestream_latent_imagewam FLUX2_SRC=/path/to/flux2 \
+    bash scripts/flux2/train_flux2_klein_imagewam.sh 8 \
+    num_epochs=1 max_steps=2 batch_size=1 gradient_accumulation_steps=1 wandb.enabled=false
+  ```
+  The hydra entry is `scripts/train.py`; `scripts/flux2/train_flux2_klein_imagewam.sh`
+  wraps `accelerate` (`scripts/train_zero1.sh`). Adjust the SBATCH partition / node names
+  and the `NCCL_SOCKET_IFNAME`/rendezvous lines in the 4-node script for your cluster.
+
+## 5. Key file map
+
+| Purpose | Path |
+|---|---|
+| Three-stream transformer | `src/imagewam/models/backbones/flux2_action_three_stream.py` |
+| LatentReasoner (Qwen3 Coconut) | `src/imagewam/models/backbones/latent_reasoner.py` |
+| Top-level model + dual loss | `src/imagewam/models/backbones/flux2_three_stream_model.py` |
+| Runtime factory | `src/imagewam/runtime.py` (`create_imagewam_flux2_klein_threestream`) |
+| Model config | `configs/model/imagewam_flux2_klein_4b_threestream_latent.yaml` |
+| Task config | `configs/task/robotwin_flux2_klein_4b_threestream_latent_imagewam.yaml` |
+| Non-idle filter generator | `scripts/data/precompute_noops_lerobot.sh` + `scripts/data/compute_robotwin_nonidle_ranges.py` |
+| 4-node training launcher | `scripts/flux2/sbatch_threestream_latent_4node.sh` |
+| Train entry / accelerate | `scripts/train.py` · `scripts/flux2/train_flux2_klein_imagewam.sh` · `scripts/train_zero1.sh` |
+
+---
 # ImageWAM
 
 Official codebase for **ImageWAM: Do World Action Models Really Need Video Generation, or Just Image Editing?**

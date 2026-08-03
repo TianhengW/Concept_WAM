@@ -1107,3 +1107,83 @@ def run_inference(cfg: DictConfig):
     save_mp4(video, output_mp4, fps=15)
     logger.info("Saved inference video to %s", output_mp4)
     return output_mp4
+
+
+def create_imagewam_flux2_klein_threestream(
+    flux2_transformer_dir: str,
+    ae_model_path: str,
+    flux2_src_path: str | None = None,
+    variant: str = "klein-base-4b",
+    action_dim: int = 14,
+    action_horizon: int = 64,
+    state_dim: int = 14,
+    qwen3_model_spec: str | None = None,
+    qwen_context_len: int = 128,
+    proprio_dim: int | None = None,
+    load_flux_weights: bool = True,
+    video_scheduler=None,
+    action_scheduler=None,
+    loss=None,
+    latent_reasoner_config=None,
+    model_dtype: torch.dtype = torch.bfloat16,
+    device: str = "cuda",
+):
+    """Build the three-stream (image+text+action) FLUX.2 ImageWAM with LatentReasoner.
+
+    Mirrors `create_imagewam_flux2_klein` but swaps the MoT core for the single
+    `Flux2ActionTransformer2DModel`. The FLUX backbone is loaded from a DIFFUSERS transformer
+    directory (`flux2_transformer_dir`, holds config.json + *.safetensors); the VAE is loaded
+    from `ae_model_path` via the flux2-src AutoEncoder (identical to the MoT factory).
+    """
+    from .models.backbones.flux2_three_stream_model import ImageWAMThreeStream
+
+    if isinstance(video_scheduler, DictConfig):
+        video_scheduler = OmegaConf.to_container(video_scheduler, resolve=True)
+    if video_scheduler is None:
+        video_scheduler = {}
+    if not isinstance(video_scheduler, dict):
+        raise ValueError(f"`video_scheduler` must be dict-like, got {type(video_scheduler)}")
+
+    if isinstance(action_scheduler, DictConfig):
+        action_scheduler = OmegaConf.to_container(action_scheduler, resolve=True)
+    if action_scheduler is None:
+        raise ValueError("`action_scheduler` is required for ImageWAM three-stream stack.")
+    if not isinstance(action_scheduler, dict):
+        raise ValueError(f"`action_scheduler` must be dict-like, got {type(action_scheduler)}")
+
+    if isinstance(loss, DictConfig):
+        loss = OmegaConf.to_container(loss, resolve=True)
+    if loss is None:
+        loss = {}
+    if not isinstance(loss, dict):
+        raise ValueError(f"`loss` must be dict-like, got {type(loss)}")
+
+    if isinstance(latent_reasoner_config, DictConfig):
+        latent_reasoner_config = OmegaConf.to_container(latent_reasoner_config, resolve=True)
+
+    return ImageWAMThreeStream.from_flux2_klein_threestream_pretrained(
+        flux2_transformer_dir=flux2_transformer_dir,
+        ae_model_path=ae_model_path,
+        flux2_src_path=flux2_src_path,
+        variant=str(variant),
+        action_dim=int(action_dim),
+        action_horizon=int(action_horizon),
+        state_dim=int(state_dim),
+        proprio_dim=(None if proprio_dim is None else int(proprio_dim)),
+        qwen3_model_spec=qwen3_model_spec,
+        qwen_context_len=int(qwen_context_len),
+        load_flux_weights=bool(load_flux_weights),
+        device=device,
+        torch_dtype=model_dtype,
+        video_train_shift=float(video_scheduler.get("train_shift", 5.0)),
+        video_infer_shift=float(video_scheduler.get("infer_shift", 5.0)),
+        video_num_train_timesteps=int(video_scheduler.get("num_train_timesteps", 1000)),
+        action_train_shift=float(action_scheduler["train_shift"]),
+        action_infer_shift=float(action_scheduler["infer_shift"]),
+        action_num_train_timesteps=int(action_scheduler["num_train_timesteps"]),
+        loss_lambda_video=float(loss.get("lambda_video", 0.5)),
+        loss_lambda_action=float(loss.get("lambda_action", 1.0)),
+        latent_reasoner_config=latent_reasoner_config,
+    )
+
+

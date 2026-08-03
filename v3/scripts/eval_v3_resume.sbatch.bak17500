@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Resume entry for the v3 (VL LatentReasoner) step_015000 RoboTwin eval.
+# Runs ONLY the tasks/phases passed via env (TASK_NAME, PHASES) so the watchdog
+# can re-launch just the not-yet-completed (task,phase) units after a confirmed hang.
+#SBATCH -p yukaichenglab
+#SBATCH -N 1
+#SBATCH --gres=gpu:8
+#SBATCH -c 64
+#SBATCH --mem=0
+#SBATCH -t 2-00:00
+#SBATCH -x gnho032,nv-h100-029,nv-h100-007
+#SBATCH -J v3eval_rt
+#SBATCH -o /storage/yukaichengLab/mazijian/wth/ImageWAM/v3/eval_logs/v3eval_rt_%j.out
+set -euo pipefail
+
+cd /storage/yukaichengLab/mazijian/wth/ImageWAM
+
+export EXP_PATH=/storage/yukaichengLab/mazijian/wth/ImageWAM/v3/runs/robotwin_v3/2026-07-31_13-35-24
+export EVAL_TRAIN_STEP=015000
+export NUM_GPUS=8
+export MAX_TASKS_PER_GPU=2
+export EVAL_NUM_EPISODES=50
+# TASK_NAME + PHASES come from the environment (set by the watchdog). Fail loud if absent.
+export PHASES="${PHASES:-[clean,random]}"
+export TASK_NAME="${TASK_NAME:?resume needs TASK_NAME=<comma,list>}"
+# per-worker stall watchdog: kill a wedged worker after 30 min no-progress (records failed).
+export ROBOTWIN_TASK_STALL_TIMEOUT_S=1800
+
+echo "[v3eval_resume] tasks=${TASK_NAME}"
+echo "[v3eval_resume] phases=${PHASES}"
+bash v3/scripts/eval_v3_robotwin.sh

@@ -1,0 +1,67 @@
+_target_: imagewam_v3.runtime_v3.create_imagewam_v3
+
+flux2_src_path: /storage/yukaichengLab/mazijian/wth/flux2
+flux2_model_path: /storage/yukaichengLab/share/model/FLUX.2-klein-base-4B/flux-2-klein-base-4b.safetensors
+ae_model_path: /storage/yukaichengLab/share/model/FLUX.2-dev/ae.safetensors
+vl_model_path: /storage/yukaichengLab/share/model/Qwen3-VL-4B-Instruct
+variant: klein-base-4b
+proprio_dim: 14
+mot_checkpoint_mixed_attn: true
+mot_gqa_implementation: repeat
+mot_force_flash_attention: false
+pack_proprio_after_text: true
+action_dit_pretrained_path: null
+concept_k: 0
+lambda_concept: 0.0
+
+# VL Coconut reasoner (must match training: Plan A, latent_loop, K=16, vision frozen).
+reasoner_mode: latent_loop
+num_latent: 16
+reasoner_layers: [9, 18, 27]
+condition_tokens: reasoning
+freeze_vision: true
+gradient_checkpointing: false
+reasoner_system_prompt: null
+reasoner_max_prompt_len: 256
+
+flux2_lora_config:
+  enabled: false
+  rank: 16
+  alpha: 16.0
+  dropout: 0.0
+  save_lora_merged: false
+  save_trainable_only: false
+  target_suffixes:
+  - qkv
+  - proj
+  - linear1
+  - linear2
+  - img_mlp.0
+  - img_mlp.2
+  - txt_mlp.0
+  - txt_mlp.2
+
+action_dit_config:
+  action_dim: 14
+  hidden_dim: 1024
+  num_heads: 24
+  attn_head_dim: 128
+  num_layers_double: 5
+  num_layers_single: 20
+  mlp_ratio: 4.0
+  max_action_horizon: 64
+  use_gradient_checkpointing: false
+
+video_scheduler:
+  train_shift: 5.0
+  infer_shift: 5.0
+  num_train_timesteps: 1000
+
+action_scheduler:
+  train_shift: 5.0
+  infer_shift: 5.0
+  num_train_timesteps: 1000
+
+loss:
+  lambda_video: 0.5
+  lambda_action: 1.0

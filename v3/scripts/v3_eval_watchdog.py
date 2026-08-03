@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Confirmation-based watchdog for the v3 (VL LatentReasoner) step_015000 RoboTwin eval.
+
+Unlike the blunt 90-min timer in acc_orchestrator.py, this NEVER kills a job for
+merely running long. It kills ONLY a *confirmed* hang: no progress written
+anywhere (manager.log + all worker *.log + every task episode_end_states.jsonl)
+for >STALE_SECS, confirmed across CONFIRM_TICKS consecutive polls. On a confirmed
+hang it scancels the job, then resubmits ONLY the not-yet-completed (task,phase)
+units (the manager reruns exactly the TASK_NAME list it is given).
+Loops until all tasks have clean+random results, then exits.
+"""
+import os, re, sys, glob, time, subprocess
+
+WROOT   = "/storage/yukaichengLab/mazijian/wth/ImageWAM"
+CKPT_TAG= "robotwin_v3_2026-07-31_13-35-24"
+EVDIR   = f"{WROOT}/evaluate_results/robotwin/{CKPT_TAG}"
+TASKYML = f"{WROOT}/third_party/RoboTwin/task_config/_eval_step_limit.yml"
+RESUME_SBATCH = f"{WROOT}/v3/scripts/eval_v3_resume.sbatch"
+LOG     = f"{WROOT}/v3/eval_logs/v3_watchdog.log"
+JOBNAME_PREFIX = "v3eval"     # matches v3eval_15k (original) and v3eval_rt (resumes)
+
+POLL          = 180      # seconds between checks
+STALE_SECS    = 2400     # 40 min of ZERO progress anywhere = suspect
+CONFIRM_TICKS = 2        # consecutive suspect polls before we call it a hang
+MIN_JOB_MIN   = 20       # ignore first 20 min of a job (model load) -> no false kill
+
+os.environ["PATH"] = "/soft/slurm/bin:" + os.environ.get("PATH", "")
+
+
+def log(m):
+    line = "[" + time.strftime("%m-%d %H:%M:%S") + "] " + m
+    print(line, flush=True)
+    with open(LOG, "a") as f:
+        f.write(line + "\n")
+
+
+def sh(cmd):
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout.strip()
+
+
+def load_tasks():
+    import yaml
+    with open(TASKYML) as f:
+        m = yaml.safe_load(f)
+    return list(dict.fromkeys(m.keys()))
+
+
+ALL = set(load_tasks())
+
+
+def done_tasks():
+    c, r = set(), set()
+    for ml in glob.glob(EVDIR + "/*/manager.log"):
+        try:
+            txt = open(ml, errors="ignore").read()
+        except Exception:
+            continue
+        if "step_017500" not in txt:  # only this ckpt (all steps share ckpt_tag dir)
+            continue
+        for mm in re.finditer(r"done task=([a-z_0-9]+) phase=([a-z]+)", txt):
+            (c if mm.group(2) == "clean" else r).add(mm.group(1))
+    return (c & ALL), (r & ALL)
+
+
+def _min(tm):
+    tm = tm.strip()
+    d = 0
+    if "-" in tm:
+        dd, tm = tm.split("-")
+        d = int(dd)
+    p = [int(x) for x in tm.split(":")]
+    while len(p) < 3:
+        p = [0] + p
+    return d * 1440 + p[0] * 60 + p[1]
+
+
+def find_job():
+    """return (jid, state, elapsed_min) for the v3 eval job, or None."""
+    out = sh("squeue -u mazijian -h -o '%i|%j|%t|%M'")
+    jobs = []
+    for ln in out.splitlines():
+        if not ln.strip():
+            continue
+        jid, name, st, tm = ln.split("|")
+        if name.startswith(JOBNAME_PREFIX):
+            jobs.append((jid, st, _min(tm)))
+    if not jobs:
+        return None
+    run = [j for j in jobs if j[1] == "R"]
+    if len(jobs) > 1:
+        log("WARN: %d v3eval jobs present: %s (acting on running only)" % (len(jobs), jobs))
+    return run[0] if run else jobs[0]
+
+
+def active_run_dir():
+    """run_ts dir of the active run = newest manager.log by mtime."""
+    mls = glob.glob(EVDIR + "/*/manager.log")
+    if not mls:
+        return None
+    newest = max(mls, key=lambda p: os.path.getmtime(p))
+    return os.path.dirname(newest)
+
+
+def freshness_secs(run_dir):
+    """seconds since the most recent write among manager.log, worker *.log,
+    and every task's episode_end_states.jsonl. Small = healthy progress."""
+    files = []
+    files += glob.glob(run_dir + "/manager.log")
+    files += glob.glob(run_dir + "/*.log")
+    files += glob.glob(run_dir + "/*/episode_end_states.jsonl")
+    if not files:
+        return 10 ** 9
+    newest = max(os.path.getmtime(p) for p in files)
+    return time.time() - newest
+
+
+def resubmit(miss_c, miss_r):
+    if miss_c:
+        phases = "[clean,random]"
+        tasks = sorted(miss_c | miss_r)
+    elif miss_r:
+        phases = "[random]"
+        tasks = sorted(miss_r)
+    else:
+        return
+    env = dict(os.environ)
+    env["TASK_NAME"] = ",".join(tasks)
+    env["PHASES"] = phases
+    out = subprocess.run("cd " + WROOT + " && sbatch " + RESUME_SBATCH, shell=True,
+                         capture_output=True, text=True, env=env).stdout.strip()
+    m = re.search(r"Submitted batch job (\d+)", out)
+    jid = m.group(1) if m else "?"
+    log("RESUBMIT %d tasks phases=%s -> job=%s :: %s" % (len(tasks), phases, jid, ",".join(tasks)))
+
+
+def main():
+    log("watchdog start | tasks=%d | STALE=%ds confirm=%d poll=%ds"
+        % (len(ALL), STALE_SECS, CONFIRM_TICKS, POLL))
+    stall = 0
+    while True:
+        c, r = done_tasks()
+        miss_c, miss_r = (ALL - c), (ALL - r)
+        if not miss_c and not miss_r:
+            log("ALL COMPLETE: %d tasks clean+random done. exit." % len(ALL))
+            return
+        job = find_job()
+        if job is None:
+            log("no v3eval job; missing clean=%d random=%d -> resubmitting" % (len(miss_c), len(miss_r)))
+            resubmit(miss_c, miss_r)
+            stall = 0
+            time.sleep(POLL)
+            continue
+        jid, st, em = job
+        if st != "R":
+            log("HEARTBEAT job=%s state=%s (queued); done c=%d/%d r=%d/%d"
+                % (jid, st, len(c), len(ALL), len(r), len(ALL)))
+            stall = 0
+            time.sleep(POLL)
+            continue
+        if em < MIN_JOB_MIN:
+            log("HEARTBEAT job=%s R %dm (<%dm grace, loading); done c=%d r=%d"
+                % (jid, em, MIN_JOB_MIN, len(c), len(r)))
+            stall = 0
+            time.sleep(POLL)
+            continue
+        rd = active_run_dir()
+        fr = freshness_secs(rd) if rd else 10 ** 9
+        if fr > STALE_SECS:
+            stall += 1
+            log("SUSPECT HANG job=%s R %dm | no progress %ds (>%ds) | dir=%s | strike %d/%d"
+                % (jid, em, int(fr), STALE_SECS, os.path.basename(rd) if rd else None, stall, CONFIRM_TICKS))
+            if stall >= CONFIRM_TICKS:
+                sh("scancel " + jid)
+                log("CONFIRMED HANG -> scancel %s (idle %ds x %d polls). resubmit missing next tick."
+                    % (jid, int(fr), stall))
+                stall = 0
+        else:
+            stall = 0
+            log("HEARTBEAT job=%s R %dm | fresh %ds ago | done c=%d/%d r=%d/%d"
+                % (jid, em, int(fr), len(c), len(ALL), len(r), len(ALL)))
+        time.sleep(POLL)
+
+
+if __name__ == "__main__":
+    main()

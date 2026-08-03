@@ -110,6 +110,17 @@ class Wan22Trainer:
         proprio_encoder = getattr(self.model, "proprio_encoder", None)
         if proprio_encoder is not None:
             trainable_params.extend(param for param in proprio_encoder.parameters() if param.requires_grad)
+        # CC-WAM Stage 1: concept_bottleneck lives on ImageWAM (outside model.dit=mot),
+        # so the DiT-only collection above misses it. Add its trainable params explicitly.
+        concept_bottleneck = getattr(self.model, "concept_bottleneck", None)
+        if concept_bottleneck is not None:
+            n_cb = 0
+            for param in concept_bottleneck.parameters():
+                if param.requires_grad:
+                    trainable_params.append(param)
+                    n_cb += param.numel()
+            if n_cb:
+                logger.info("Added concept_bottleneck to optimizer: %d trainable params.", n_cb)
         if not trainable_params:
             raise ValueError("No trainable parameters found after applying trainable policy.")
         self.optimizer = torch.optim.AdamW(

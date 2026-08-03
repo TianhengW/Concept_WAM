@@ -1,0 +1,62 @@
+_target_: imagewam.runtime.create_imagewam_flux2_klein_threestream
+
+# FLUX.2 backbone is loaded from the DIFFUSERS transformer dir (config.json + *.safetensors).
+flux2_transformer_dir: /storage/yukaichengLab/share/model/FLUX.2-klein-base-4B/transformer
+# VAE (AutoEncoder) source, identical to the MoT FLUX.2 factory.
+ae_model_path: /storage/yukaichengLab/share/model/FLUX.2-dev/ae.safetensors
+# flux2-src is needed only to import flux2.autoencoder for the VAE.
+flux2_src_path: /storage/yukaichengLab/mazijian/wth/flux2
+variant: klein-base-4b
+
+qwen3_model_spec: /storage/yukaichengLab/share/model/Qwen3-4B
+qwen_context_len: 128
+proprio_dim: ${data.train.processor.proprio_output_dim}
+load_flux_weights: true
+
+# three-stream action expert dims (RoboTwin bimanual ALOHA: 14-d action & state)
+action_dim: ${data.train.processor.action_output_dim}
+state_dim: ${data.train.processor.proprio_output_dim}
+action_horizon: 64
+
+# Online Qwen3 reasoning in the training graph -> encoder_hidden_states (text stream):
+# one Qwen forward yields the prompt reps (layers 9/18/27 concat = 7680-d, matches
+# joint_attention_dim) plus `num_latent` appended Coconut latent reasoning tokens.
+latent_reasoner_config:
+  enabled: true
+  qwen_path: /storage/yukaichengLab/share/model/Qwen3-4B
+  mode: latent_loop        # thought (single forward) | latent_loop (Coconut-style)
+  num_latent: 16
+  qwen_layers: [9, 18, 27]
+  max_prompt_len: 192
+  system_prompt: >-
+    You are the reasoning module of a bimanual ALOHA robot manipulation policy.
+    Given a task instruction, reason step by step about: which objects are involved,
+    which arm (left or right) should act, and the ordered sub-steps required
+    (approach, grasp, lift, move, place, release). Your reasoning conditions the
+    robot's action generator.
+  lora:
+    rank: 16
+    alpha: 16.0
+    dropout: 0.0
+    target_suffixes:
+      - q_proj
+      - k_proj
+      - v_proj
+      - o_proj
+      - gate_proj
+      - up_proj
+      - down_proj
+
+video_scheduler:
+  train_shift: 5.0
+  infer_shift: 5.0
+  num_train_timesteps: 1000
+
+action_scheduler:
+  train_shift: 5.0
+  infer_shift: 5.0
+  num_train_timesteps: 1000
+
+loss:
+  lambda_video: 0.5
+  lambda_action: 1.0

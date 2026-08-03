@@ -59,7 +59,10 @@ class ImageWAM(torch.nn.Module):
         # prepended to the action token sequence in `_training_loss_flux2`.
         self.lambda_concept = float(lambda_concept)
         self.concept_bottleneck = None
-        if str(stack) == "flux2":
+        # concept_k=0 disables the bottleneck entirely -> original ImageWAM
+        # behavior. This is how the B0 control (no-concept) is trained under the
+        # exact same data/steps as B1, for a fair "with vs without concept" comparison.
+        if str(stack) == "flux2" and int(concept_k) > 0:
             from imagewam.models.backbones.concept_bottleneck import ConceptBottleneck
             self.concept_bottleneck = ConceptBottleneck(
                 dv=int(video_expert.hidden_dim),
@@ -3633,12 +3636,26 @@ class ImageWAM(torch.nn.Module):
             video_t_mod=video_pre["t_mod"],
             attention_mask=prefix_attention_mask,
         )
+        # CC-WAM Stage 1: 推理路径 concept 注入(与训练路径 _training_loss_flux2 严格一致)。
+        # ref image = video img tokens 前 cond_len 个(推理时 target 为空, img 段即 cond=ref)。
+        # c_t 只依赖 ref image, 在 denoise 循环外算一次。
+        n_concept = 0
+        c_t = None
+        concept_ids = None
+        if getattr(self, "concept_bottleneck", None) is not None:
+            _cond_len = int(video_pre["cond_len"])
+            _ref_img = video_pre["tokens"]["img"][:, :_cond_len]
+            c_t = self.concept_bottleneck(_ref_img)                       # [B, K, da]
+            n_concept = int(c_t.shape[1])
+            concept_ids = self.concept_bottleneck.build_concept_ids(
+                batch_size, device=latents_action.device, dtype=latents_action.dtype
+            )
         full_attention_mask = self._build_mot_attention_mask_flux2(
             batch_size=batch_size,
             txt_len=int(video_pre["txt_len"]),
             target_len=0,
             cond_len=int(video_pre["cond_len"]),
-            action_len=int(latents_action.shape[1]),
+            action_len=int(latents_action.shape[1]) + n_concept,          # 含 K 个 concept slot
             device=latents_action.device,
             text_attention_mask=video_pre["text_mask"],
         )
@@ -3664,15 +3681,24 @@ class ImageWAM(torch.nn.Module):
                 action_tokens=latents_action,
                 timestep=self._scheduler_timestep_to_unit(timestep_action, self.infer_action_scheduler),
             )
+            # CC-WAM: prepend K concept slots 到 action tokens/ids(同训练路径 cat([c_t, action]))。
+            _action_tokens_in = action_pre["tokens"]
+            _action_ids_in = action_pre["ids"]
+            if n_concept > 0:
+                _action_tokens_in = torch.cat([c_t.to(_action_tokens_in.dtype), _action_tokens_in], dim=1)
+                _action_ids_in = torch.cat([concept_ids, _action_ids_in], dim=1)
             action_tokens = self.mot.forward_action_with_video_cache(
-                action_tokens=action_pre["tokens"],
+                action_tokens=_action_tokens_in,
                 action_freqs=None,
                 action_t_mod=action_pre["t_mod"],
-                action_context_payload={"ids": action_pre["ids"]},
+                action_context_payload={"ids": _action_ids_in},
                 video_kv_cache=video_kv_cache,
                 attention_mask=full_attention_mask,
                 video_seq_len=prefix_len,
             )
+            # drop K concept slots before action head(同训练路径 action_out[:, n_concept:])。
+            if n_concept > 0:
+                action_tokens = action_tokens[:, n_concept:]
             pred_action = self.action_expert.post_dit(action_tokens, action_pre)
             latents_action = self.infer_action_scheduler.step(pred_action, step_delta_action, latents_action)
 
@@ -4438,6 +4464,8 @@ class ImageWAM(torch.nn.Module):
             payload["save_trainable_only"] = bool(getattr(self, "save_trainable_only", False))
         if self.proprio_encoder is not None:
             payload["proprio_encoder"] = self.proprio_encoder.state_dict()
+        if getattr(self, "concept_bottleneck", None) is not None:
+            payload["concept_bottleneck"] = self.concept_bottleneck.state_dict()
         if optimizer is not None:
             payload["optimizer"] = optimizer.state_dict()
         torch.save(payload, path)
@@ -4482,6 +4510,10 @@ class ImageWAM(torch.nn.Module):
                 logger.warning("Checkpoint has no `proprio_encoder` weights; keeping current `proprio_encoder` params.")
         elif "proprio_encoder" in payload:
             logger.warning("Checkpoint contains `proprio_encoder` weights but current model has `proprio_dim=None`; ignoring.")
+
+        if getattr(self, "concept_bottleneck", None) is not None and "concept_bottleneck" in payload:
+            self.concept_bottleneck.load_state_dict(payload["concept_bottleneck"], strict=True)
+            logger.info("Loaded concept_bottleneck weights from checkpoint.")
 
         if optimizer is not None and "optimizer" in payload:
             optimizer.load_state_dict(payload["optimizer"])

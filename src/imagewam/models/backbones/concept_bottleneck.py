@@ -32,6 +32,10 @@ class ConceptBottleneck(nn.Module):
         self.kv_proj = nn.Linear(dv, da)
         self.attn = nn.MultiheadAttention(da, n_heads, batch_first=True)
         self.norm = nn.LayerNorm(da)
+        # CC-WAM Stage 1 方向1a: 强制注入,不再用 gate。
+        # (zero-init gate 在 ID 目标下被优化器压回 0、concept 被忽略——见 gate 实验存档:
+        #  B1 loss 0.00279 vs B0 0.00272, sign-test z=0.28 打平。)
+        # 去掉 gate 这个"免费忽略"出口,concept 强制进入 action 序列,由训练决定它有害/无害/有益。
 
     def forward(self, ref_img_tokens: torch.Tensor) -> torch.Tensor:
         """ref_img_tokens: [B, cond_len, dv] (video expert's cond segment).

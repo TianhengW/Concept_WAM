@@ -48,6 +48,7 @@ def _profile_add(key: str, dt: float) -> None:
 
 
 def get_safe_default_codec():
+    return "pyav"  # cluster fix: torchcodec imports but its system FFmpeg (libavutil) is missing at runtime; av bundles its own
     if importlib.util.find_spec("torchcodec"):
         return "torchcodec"
     else:

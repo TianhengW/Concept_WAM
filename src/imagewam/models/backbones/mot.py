@@ -171,7 +171,12 @@ class MoT(nn.Module):
             elif H_kv != H:
                 enable_gqa = True
             with _sdpa_context():
-                out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, enable_gqa=enable_gqa)
+                # torch<2.5 的 sdpa 无 enable_gqa 参数;仅真正需要 GQA(H_kv!=H 且非 repeat)时才传,
+                # 保持对 RoboTwin env(torch 2.4.1)兼容(H_kv==H 时 enable_gqa=False,不传即可)。
+                if enable_gqa:
+                    out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, enable_gqa=True)
+                else:
+                    out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
             return out.transpose(1, 2).reshape(batch_size, query_len, H * D)
 
         if self.mot_checkpoint_mixed_attn and self.training:

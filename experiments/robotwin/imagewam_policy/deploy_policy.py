@@ -121,6 +121,7 @@ def _compose_sim_cfg(
 def _apply_model_overrides(cfg: DictConfig, usr_args: Dict[str, Any]) -> None:
     model_overrides = usr_args.get("model_overrides")
     if isinstance(model_overrides, dict):
+        OmegaConf.set_struct(cfg.model, False)  # v2: allow new model keys (slot_*)
         for key, value in model_overrides.items():
             cfg.model[key] = value
 

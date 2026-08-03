@@ -284,3 +284,24 @@ third_party/RoboTwin/assets/*
 OPEN_SOURCE_RELEASE_PLAN.md
 docs/model_card_*.md
 docs/huggingface_model_card_template.md
+# ---- Three-Stream-WAM upload excludes (logs / downloaded weights / backups) ----
+ImageWAM-FLUX.2-4B-RoboTwin/
+v3/eval_logs/
+v3/slurm_logs/
+v2/slurm_logs/
+slurm_logs/
+*/slurm_logs/
+*.bak
+*.bak_*
+*.orig.bak
+*.v2bak
+eval_logs/
+*.nohup
+
+# Unrelated probe activation dumps (concept/SAE work, not part of three-stream)
+experiments/sae_probe/
+*.f32
+*.npy
+*.npz
+*.h5
+*.hdf5
