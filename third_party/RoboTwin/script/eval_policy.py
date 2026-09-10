@@ -13,6 +13,15 @@ import numpy as np
 from pathlib import Path
 from collections import deque
 import traceback
+import signal
+
+
+class _EpisodeTimeout(Exception):
+    pass
+
+
+def _episode_alarm_handler(signum, frame):
+    raise _EpisodeTimeout("episode exceeded ROBOTWIN_EPISODE_TIMEOUT_S")
 
 import yaml
 from datetime import datetime
@@ -321,14 +330,38 @@ def eval_policy(task_name,
 
     args["eval_mode"] = True
 
+    _ep_to = int(os.environ.get("ROBOTWIN_EPISODE_TIMEOUT_S", "0") or "0")
+    _skip_seeds = set()
+    for _sv in os.environ.get("ROBOTWIN_SKIP_SEEDS", "").replace(" ", "").split(","):
+        if _sv.isdigit():
+            _skip_seeds.add(int(_sv))
+    _skf = os.environ.get("ROBOTWIN_SKIP_SEEDS_FILE", "")
+    if _skf and os.path.exists(_skf):
+        for _ln in open(_skf):
+            if _ln.strip().isdigit():
+                _skip_seeds.add(int(_ln.strip()))
+    if _skip_seeds:
+        print(f"[SKIP-SEED] blocklist loaded: {sorted(_skip_seeds)}", flush=True)
+
     while succ_seed < test_num:
+        if _ep_to > 0:
+            signal.alarm(0)
+        if now_seed in _skip_seeds:
+            print(f"[SKIP-SEED] skipping deadlock seed {now_seed}", flush=True)
+            now_seed += 1
+            continue
         render_freq = args["render_freq"]
         args["render_freq"] = 0
 
         if expert_check:
             try:
+                if _ep_to > 0:
+                    signal.signal(signal.SIGALRM, _episode_alarm_handler)
+                    signal.alarm(_ep_to)
                 TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
                 episode_info = TASK_ENV.play_once()
+                if _ep_to > 0:
+                    signal.alarm(0)
                 TASK_ENV.close_env()
             except UnStableError as e:
                 # print(" -------------")

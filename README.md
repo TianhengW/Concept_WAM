@@ -16,6 +16,7 @@ All commands below are assumed to run from the repository root.
 
 - [Repository Structure](#repository-structure)
 - [Three-Stream + Latent WAM](#three-stream--latent-wam)
+- [Action-as-Patch (AP)](#action-as-patch-ap)
 - [Basic Installation](#basic-installation)
 - [Model Preparation](#model-preparation)
 - [Data Preparation](#data-preparation)
@@ -117,6 +118,156 @@ model.qwen3_model_spec=...`) or edit
 | Non-idle filter generator | `scripts/data/precompute_noops_lerobot.sh` · `scripts/data/compute_robotwin_nonidle_ranges.py` |
 | 4-node training launcher | `scripts/flux2/sbatch_threestream_latent_4node.sh` |
 | Train entry / accelerate | `scripts/train.py` · `scripts/flux2/train_flux2_klein_imagewam.sh` · `scripts/train_zero1.sh` |
+
+
+## Action-as-Patch (AP)
+
+Action-as-patch keeps the **single-stream** FLUX.2 backbone and injects actions as extra
+latent *patches* instead of adding a separate action expert. An action chunk of
+`action_horizon` steps is tiled into 128-d latent tokens, concatenated with the video
+tokens, and denoised by the **same** transformer under **one** sigma. The loss is
+`0.5 * loss_video + 1.0 * loss_action`.
+
+Because there is no second tower, AP adds almost no parameters over the base ImageWAM
+model, and video and action stay tightly coupled through shared attention.
+
+### Architecture
+
+| | |
+|---|---|
+| Backbone | FLUX.2-klein-4B (single stream, shared for video + action) |
+| Action injection | chunk `[T, action_dim]` → tiled into 128-d latent patches → concatenated with video tokens |
+| Timestep | **one** sigma for video and action (no separate action schedule) |
+| Loss | `0.5 * loss_video + 1.0 * loss_action` |
+| Variants | `actionpatch` (default) · `_isoattn` · `_sigmashift` · `_timealign` · `_vl` · `actionrouter` |
+
+### Data (RoboDojo)
+
+RoboDojo ships as raw HDF5; convert it to the LeRobot layout, then precompute the
+normalization stats and the non-idle ranges:
+
+```bash
+# 1) raw HDF5 -> LeRobot (parquet + per-camera mp4)
+bash scripts/download_robodojo_hdf5.sh                 # or download_robodojo_lerobot_share.sh
+python scripts/data/robodojo_raw_to_lerobot.py --src <hdf5_root> --dst <lerobot_root>
+
+# 2) normalization stats (action / state mean+std, per-step stats)
+python scripts/data/compute_robodojo_dataset_stats.py --root <lerobot_root>
+# -> <lerobot_root>/dataset_stats.json
+
+# 3) non-idle ranges (drops idle prefixes/suffixes; same recipe as RoboTwin)
+#    -> <lerobot_root>/nonidle_ranges.json
+```
+
+> **Re-encode the videos before training.** RoboDojo's released mp4s are AV1 with a single
+> keyframe per clip, so a random seek decodes hundreds of frames to return 17. On one
+> 2-GPU host this held the GPUs at ~19% duty (225 W of a 700 W TDP) and 7.3 s/step.
+> Transcoding to H.264 with `GOP=25` cut per-camera decode from 284 ms to 28 ms and took
+> the same job to 1.3 s/step at 648 W. See the transcode helper in `scripts/data/`.
+
+The task config points at two roots (`RoboDojo_lerobot` and `RoboDojo_lerobot_part2`,
+split only by download batch) and shares one pooled `dataset_stats.json`.
+
+### Training
+
+```bash
+# 4 nodes x 8 GPUs = 32, ZeRO-1, global batch 256 (batch 4 x accum 2), 16 epochs
+sbatch exploration/action_img_patch/sbatch_actionpatch_robodojo_4node.sh
+
+# resume from a saved optimizer state (NOT the weights/*.pt file — see note below)
+sbatch exploration/action_img_patch/sbatch_actionpatch_robodojo_4node.sh \
+  resume=runs/robodojo_flux2_klein_4b_actionpatch_full/<timestamp>/checkpoints/state/step_080000
+
+# single-node smoke (8 GPUs, 2 steps) — no Slurm
+TASK=robodojo_flux2_klein_4b_actionpatch_full FLUX2_SRC=/path/to/flux2 \
+  bash scripts/flux2/train_flux2_klein_imagewam.sh 8 \
+  num_epochs=1 max_steps=2 batch_size=1 gradient_accumulation_steps=1 wandb.enabled=false
+
+# RoboTwin instead of RoboDojo — same recipe, different TASK
+sbatch exploration/action_img_patch/sbatch_actionpatch_full_4node.sh
+```
+
+Before the first run, edit these in the launcher for your cluster:
+
+| Line | What to change |
+|---|---|
+| `#SBATCH -p` / `-N` / `--gres` | partition, node count, GPUs per node |
+| `#SBATCH -x` | node exclusion list (see *Operational notes*) |
+| `REPO_ROOT=` | absolute path to this repo |
+| `FLUX2_SRC=` | path to the `flux2` source tree (the AP repo does **not** vendor it) |
+| `NCCL_SOCKET_IFNAME` / `NCCL_IB_HCA` | your Ethernet interface and the **active** IB rails |
+| `MASTER_PORT` | any free port; must differ between concurrent jobs |
+
+`MASTER_ADDR` is resolved automatically from the first node's IPv4 on `NCCL_SOCKET_IFNAME`
+(compute hostnames on our cluster are IPv6 link-local only).
+
+### Key hyperparameters (`configs/task/robodojo_flux2_klein_4b_actionpatch_full.yaml`)
+
+```yaml
+batch_size: 4                    # per GPU
+gradient_accumulation_steps: 2   # -> global batch 4 x 2 x 32 = 256
+learning_rate: 1e-4              # cosine schedule
+num_epochs: 16                   # ~102.6k steps on the full RoboDojo set
+save_every: 5000                 # ~5.5 h per checkpoint at 0.25 step/s
+mixed_precision: bf16
+weight_decay: 1e-2
+num_workers: 16
+```
+
+`ZERO_STAGE=1` is exported by the launcher. Note that **ZeRO stage 2+ produced NaNs after
+the first step** on this cluster; stage 1 and plain DDP are both fine.
+
+### Key files
+
+| Purpose | Path |
+|---|---|
+| AP model (action patching + dual loss) | `exploration/action_img_patch/model.py` |
+| Model factory / variant dispatch | `exploration/action_img_patch/factory.py` |
+| Model config | `configs/model/imagewam_flux2_klein_4b_actionpatch.yaml` |
+| RoboDojo task config | `configs/task/robodojo_flux2_klein_4b_actionpatch_full.yaml` |
+| RoboTwin task config | `configs/task/robotwin_flux2_klein_4b_actionpatch_full.yaml` |
+| 4-node RoboDojo launcher | `exploration/action_img_patch/sbatch_actionpatch_robodojo_4node.sh` |
+| Train entry / accelerate | `scripts/train.py` · `scripts/flux2/train_flux2_klein_imagewam.sh` |
+| HDF5 → LeRobot converter | `scripts/data/robodojo_raw_to_lerobot.py` |
+| Dataset stats | `scripts/data/compute_robodojo_dataset_stats.py` |
+| RoboDojo sim setup (Isaac Sim 5.1) | `scripts/setup_robodojo_sim.sh` · `scripts/install_robodojo_isaacsim_only.sh` |
+| Eval managers | `experiments/robodojo/` |
+
+### Operational notes
+
+Hard-won on a 4-node H800 cluster over a 100k-step run; each of these cost real time.
+
+**`weights/step_N.pt` and `state/step_N/` are different things.** The former is a single
+~7.8 GB file for *evaluation*; the latter is a ~51 GB directory (sharded model + optimizer +
+32 `random_states_*.pkl`) for *resuming*. A crash while writing can leave a complete
+`weights/*.pt` next to a truncated `state/`. Before resuming, check that
+`state/step_N/latest` exists and that the shard and `random_states` counts are full —
+a truncated state directory will not resume.
+
+**To tell whether a hung-looking job is actually hung, watch the log file size.** Over a
+60 s window, a healthy run grows its Slurm `.out` by ~1.2 KB. Every other signal we tried
+is ambiguous: GPU power sits at 130–210 W and `utilization.gpu` reads 100% *both* when
+training normally and when spinning inside a stalled NCCL collective, and the main ranks'
+`rchar` is small in both cases because the dataloader workers do the reading. Log growth
+was the only reliable discriminator.
+
+**Enable the NCCL FlightRecorder.** The launcher sets
+`TORCH_NCCL_TRACE_BUFFER_SIZE=2048` and `TORCH_NCCL_DUMP_ON_TIMEOUT=1`, dumping to a shared
+path rather than each node's `/tmp` (which vanishes with the job). Without it, a collective
+timeout gives no stack, and the only way to find the culprit is the *absent-rank* method:
+when all ranks but one report `Watchdog caught collective operation timeout` at the same
+sequence number, the **one that reported nothing** is the rank that never reached the
+collective — that is the faulty node. Note that torchrun's own "Root Cause" line names the
+rank whose watchdog fired first, which is a *victim*, not the cause.
+
+**Raising the collective timeout only covers PG 0.** `IMAGEWAM_PG_TIMEOUT_MIN` feeds
+Accelerate's `InitProcessGroupKwargs`, which sets the default process group. The gradient
+all-reduce runs on PG 1 and still uses the 10-minute NCCL default.
+
+**Keep a node exclusion list.** One bad node can take down every 4-node job it lands on;
+over this run a single host was implicated in five failures before being excluded. Note
+that a command-line `--exclude` **overrides** the `#SBATCH -x` line rather than merging with
+it, so either put the full list on the command line or omit it entirely.
 
 
 ## Basic Installation

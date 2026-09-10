@@ -1,0 +1,29 @@
+policy_name: imagewam_policy
+protocol: ws
+host: localhost
+port: null
+bench_name: null
+task_name: null
+ckpt_name: null
+env_cfg_type: null
+seed: null
+action_type: null
+gpu_id: null
+eval_batch: false
+# ---- ImageWAM (action-as-patch on RoboDojo) ----
+imagewam_task: robodojo_flux2_klein_4b_actionpatch_full   # hydra task config used at training time
+sim_cfg_name: sim_robotwin.yaml                            # EVALUATION block defaults (num_inference_steps etc.)
+checkpoint_path: null        # or $IMAGEWAM_CKPT; else checkpoints/<ckpt_name>/*.pt
+dataset_stats_path: null     # or $IMAGEWAM_STATS; else found next to the checkpoint / run dir
+device: cuda
+mixed_precision: bf16
+action_horizon: 16           # = data.train.num_frames - 1
+replan_steps: 16             # execute the whole chunk before re-planning (RoboTwin eval used 16/16)
+num_inference_steps: 10
+sigma_shift: null
+text_cfg_scale: 1.0
+negative_prompt: ""
+rand_device: cpu
+tiled: false
+timing_enabled: false
+robotwin_camera_layout: compact_288x256

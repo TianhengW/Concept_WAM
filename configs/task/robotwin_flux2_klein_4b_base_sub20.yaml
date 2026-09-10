@@ -1,0 +1,67 @@
+# @package _global_
+# BASELINE for exploration/action_img_patch: ORIGINAL ImageWAM (MoT: FLUX.2
+# video expert + separate action DiT), RoboTwin, 1/20 subsampled data.
+# concept_k=0 -> original ImageWAM behavior (no concept bottleneck).
+# MUST stay hyper-parameter-identical to robotwin_flux2_klein_4b_actionpatch_sub20
+# except for the model.
+
+defaults:
+  - override /data: robotwin_omnigen2
+  - override /model: imagewam_flux2_klein_4b_base
+  - _self_
+
+data:
+  train:
+    dataset_dirs:
+      - /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0
+    pretrained_norm_stats: /storage/yukaichengLab/share/datasets/fastwam_robotwin/dataset_stats.json
+    require_text_cache: false
+    qwen_text_cache_dir: null
+    nonidle_filter_path: /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0/nonidle_ranges.json
+    # 1/20 subsample switch: __len__ = ceil(N/stride), sample_idx = idx*stride.
+    sample_index_stride: 20
+  val:
+    dataset_dirs:
+      - /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0
+    pretrained_norm_stats: /storage/yukaichengLab/share/datasets/fastwam_robotwin/dataset_stats.json
+    require_text_cache: false
+    qwen_text_cache_dir: null
+    nonidle_filter_path: /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0/nonidle_ranges.json
+    sample_index_stride: 20
+
+# global batch = batch_size(4) * grad_accum(2) * (2 nodes * 8 gpus = 16) = 128
+batch_size: 4
+num_workers: 16
+prefetch_factor: 2
+persistent_workers: true
+keep_latest_state_only: true
+
+lr_scheduler_type: "cosine"
+learning_rate: 1e-4
+num_epochs: 10
+max_steps: null
+log_every: 10
+save_every: 2500
+eval_every: 100000
+
+gradient_accumulation_steps: 2
+weight_decay: 1e-2
+mixed_precision: "bf16"
+resume: null
+
+model:
+  flux2_model_path: /storage/yukaichengLab/share/model/FLUX.2-klein-base-4B/flux-2-klein-base-4b.safetensors
+  ae_model_path: /storage/yukaichengLab/share/model/FLUX.2-dev/ae.safetensors
+  flux2_src_path: /storage/yukaichengLab/mazijian/wth/flux2
+  qwen3_model_spec: /storage/yukaichengLab/share/model/Qwen3-4B
+  qwen_context_len: 128
+  load_text_encoder: true
+  proprio_dim: ${data.train.processor.proprio_output_dim}
+  # original ImageWAM: no concept bottleneck
+  concept_k: 0
+  lambda_concept: 0.0
+
+wandb:
+  enabled: true
+  project: imagewam
+  name: robotwin_flux2_klein_4b_base_sub20

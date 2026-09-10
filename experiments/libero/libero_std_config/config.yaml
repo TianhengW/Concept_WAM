@@ -1,0 +1,5 @@
+benchmark_root: /storage/yukaichengLab/mazijian/wth/ImageWAM/third_party/LIBERO/libero/libero
+bddl_files: /storage/yukaichengLab/mazijian/wth/ImageWAM/third_party/LIBERO/libero/libero/bddl_files
+init_states: /storage/yukaichengLab/mazijian/wth/ImageWAM/third_party/LIBERO/libero/libero/init_files
+datasets: /storage/yukaichengLab/mazijian/wth/ImageWAM/third_party/LIBERO/libero/datasets
+assets: /storage/yukaichengLab/mazijian/wth/ImageWAM/third_party/LIBERO/libero/libero/assets

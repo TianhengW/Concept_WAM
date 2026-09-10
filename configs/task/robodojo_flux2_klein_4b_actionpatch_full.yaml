@@ -1,0 +1,66 @@
+# @package _global_
+# exploration/action_img_patch: single-stream "action-as-image-patch" on RoboDojo
+# (arx_x5 dual-arm, 35 benchmark tasks x 100 episodes, 25 Hz), 4 nodes x 8 GPUs.
+# Hyper-parameters are field-for-field identical to robotwin_flux2_klein_4b_actionpatch_full
+# except the data root / stats / schedule length: RoboDojo has ~1.8M frames vs RoboTwin's
+# 5.37M (RoboDojo ~1.8M frames, ~1.65M after no-op filtering): 16 epochs x ~6.4k steps ≈ 103k steps,
+# i.e. the same ~100k-step budget as the RoboTwin flagship run (5 ep x 21k).
+#
+# Two roots (both produced by scripts/data/robodojo_raw_to_lerobot.py): 32 tasks converted first,
+# store_laptop_and_headphones + swap_blocks (finished downloading later) as *_part2. Per-root
+# nonidle dict as in the RoboTwin aug mix; dataset_stats.json is pooled over both roots.
+# Layout is the same LeRobot v2.1
+# layout as fastwam_robotwin: 14-d [L6,L1,R6,R1] joint state/action, cam_high/left/right
+# wrist videos), so configs/data/robotwin_omnigen2.yaml (compact_288x256) is reused as-is.
+
+defaults:
+  - override /data: robotwin_omnigen2
+  - override /model: imagewam_flux2_klein_4b_actionpatch
+  - _self_
+
+data:
+  train:
+    dataset_dirs:
+      - /storage/yukaichengLab/share/datasets/RoboDojo_lerobot
+      - /storage/yukaichengLab/share/datasets/RoboDojo_lerobot_part2
+    pretrained_norm_stats: /storage/yukaichengLab/share/datasets/RoboDojo_lerobot/dataset_stats.json
+    require_text_cache: false
+    qwen_text_cache_dir: null
+    nonidle_filter_path:
+      "/storage/yukaichengLab/share/datasets/RoboDojo_lerobot": /storage/yukaichengLab/share/datasets/RoboDojo_lerobot/nonidle_ranges.json
+      "/storage/yukaichengLab/share/datasets/RoboDojo_lerobot_part2": /storage/yukaichengLab/share/datasets/RoboDojo_lerobot_part2/nonidle_ranges.json
+  val:
+    dataset_dirs:
+      - /storage/yukaichengLab/share/datasets/RoboDojo_lerobot
+      - /storage/yukaichengLab/share/datasets/RoboDojo_lerobot_part2
+    pretrained_norm_stats: /storage/yukaichengLab/share/datasets/RoboDojo_lerobot/dataset_stats.json
+    require_text_cache: false
+    qwen_text_cache_dir: null
+    nonidle_filter_path:
+      "/storage/yukaichengLab/share/datasets/RoboDojo_lerobot": /storage/yukaichengLab/share/datasets/RoboDojo_lerobot/nonidle_ranges.json
+      "/storage/yukaichengLab/share/datasets/RoboDojo_lerobot_part2": /storage/yukaichengLab/share/datasets/RoboDojo_lerobot_part2/nonidle_ranges.json
+
+# global batch = batch_size(4) * grad_accum(2) * (4 nodes * 8 gpus = 32) = 256
+batch_size: 4
+num_workers: 16
+prefetch_factor: 2
+persistent_workers: true
+keep_latest_state_only: true
+
+lr_scheduler_type: "cosine"
+learning_rate: 1e-4
+num_epochs: 16
+max_steps: null
+log_every: 10
+save_every: 5000
+eval_every: 100000
+
+gradient_accumulation_steps: 2
+weight_decay: 1e-2
+mixed_precision: "bf16"
+resume: null
+
+wandb:
+  enabled: true
+  project: imagewam
+  name: robodojo_flux2_klein_4b_actionpatch_full

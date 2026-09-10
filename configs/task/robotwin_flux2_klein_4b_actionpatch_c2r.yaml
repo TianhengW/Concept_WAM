@@ -1,0 +1,61 @@
+# @package _global_
+# exploration/action_img_patch: single-stream "action-as-image-patch" on RoboTwin,
+# FULL no-op-filtered data (~5.37M samples/epoch). 4 nodes x 8 GPUs.
+# MUST stay hyper-parameter-identical to robotwin_flux2_klein_4b_base_sub20
+# (the MoT baseline) except for the model.
+
+defaults:
+  - override /data: robotwin_omnigen2
+  - override /model: imagewam_flux2_klein_4b_actionpatch
+  - _self_
+
+data:
+  train:
+    dataset_dirs:
+      - /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0
+    pretrained_norm_stats: /storage/yukaichengLab/share/datasets/fastwam_robotwin/dataset_stats.json
+    require_text_cache: false
+    qwen_text_cache_dir: null
+    nonidle_filter_path: /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0/nonidle_ranges.json
+    episode_index_filter:
+      mode: periodic_prefix
+      period: 550
+      keep_first: 50
+  val:
+    dataset_dirs:
+      - /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0
+    pretrained_norm_stats: /storage/yukaichengLab/share/datasets/fastwam_robotwin/dataset_stats.json
+    require_text_cache: false
+    qwen_text_cache_dir: null
+    nonidle_filter_path: /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0/nonidle_ranges.json
+    episode_index_filter:
+      mode: periodic_prefix
+      period: 550
+      keep_first: 50
+
+# C2R (clean-to-randomization): clean-only training (per-task first 50 clean episodes via
+# periodic_prefix keep_first=50), eval on clean+random. max_steps=30000 (~4D-WAM/AHA-WAM band),
+# save_every=5000 for ckpt sweep. global batch = batch(4)*accum(2)*32 = 256 (same as full).
+batch_size: 4
+num_workers: 16
+prefetch_factor: 2
+persistent_workers: true
+keep_latest_state_only: true
+
+lr_scheduler_type: "cosine"
+learning_rate: 1e-4
+num_epochs: 100
+max_steps: 30000
+log_every: 10
+save_every: 5000
+eval_every: 100000
+
+gradient_accumulation_steps: 2
+weight_decay: 1e-2
+mixed_precision: "bf16"
+resume: null
+
+wandb:
+  enabled: true
+  project: imagewam
+  name: robotwin_flux2_klein_4b_actionpatch_c2r

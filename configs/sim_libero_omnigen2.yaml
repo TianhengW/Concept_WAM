@@ -25,6 +25,7 @@ EVALUATION:
   num_steps_wait: 30
   replan_steps: 10
   binarize_gripper: true
+  gripper_convention: auto  # auto | fastwam01 | raw_pm1 (see eval_libero_single._gripper_convention)
   use_action_ensembler: false
   visualize_future_video: false
 

@@ -1,0 +1,49 @@
+# @package _global_
+# action-as-patch on LIBERO-plus (Sylvest/libero_plus_lerobot, FastWAM package), H800.
+# Dataset: one LeRobot v2.1 root, 2 cameras (front/wrist, 256x256 -> 224x224, horizontal
+# concat 224x448), action 7d / proprio 8d, 20 FPS; model side is the single-stream action-as-patch
+# (fixed zero-param codec, action_patch_dim follows processor = 7).
+# Ported from the diguayun config (xz/code/.../configs/task/libero_plus_flux2_klein_4b_actionpatch.yaml):
+# same lr / schedule / augmentation; batch_size & epochs re-tuned for H800 (see sbatch).
+
+defaults:
+  - override /data: libero_plus_omnigen2_pair
+  - override /model: imagewam_flux2_klein_4b_actionpatch
+  - _self_
+
+data:
+  train:
+    dataset_dirs:
+      - ${oc.env:AAP_LIBERO_PLUS_ROOT,/storage/yukaichengLab/share/datasets/fastwam_libero_plus}/libero_plus_lerobot
+    require_text_cache: false
+    qwen_text_cache_dir: null
+    qwen_context_len: 512
+
+# per-GPU batch; global = batch_size * gradient_accumulation_steps * world_size.
+# Final values are set by the sbatch launcher overrides (smoke test decides the H800 batch).
+batch_size: 8
+num_workers: 16
+prefetch_factor: 2
+persistent_workers: true
+keep_latest_state_only: true
+
+lr_scheduler_type: "cosine"
+learning_rate: 1e-4
+num_epochs: 50
+max_steps: null
+log_every: 10
+save_every: 2000
+eval_every: 100000
+
+gradient_accumulation_steps: 1
+weight_decay: 1e-2
+mixed_precision: "bf16"
+resume: null
+
+model:
+  proprio_dim: ${data.train.processor.proprio_output_dim}
+
+wandb:
+  enabled: true
+  project: imagewam
+  name: libero_plus_flux2_klein_4b_actionpatch

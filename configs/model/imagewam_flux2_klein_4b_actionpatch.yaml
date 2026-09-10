@@ -1,0 +1,35 @@
+_target_: exploration.action_img_patch.factory.create_imagewam_flux2_klein_actionpatch
+
+# Single-stream "action-as-image-patch" model (exploration/action_img_patch).
+# FLUX.2 Klein 4B backbone, weights loaded unchanged; NO action expert; the
+# action chunk is tiled into 128-d latent tokens (fixed codec, 0 params) and
+# denoised alongside the target image tokens with ONE sigma.
+
+flux2_model_path: /storage/yukaichengLab/share/model/FLUX.2-klein-base-4B/flux-2-klein-base-4b.safetensors
+ae_model_path: /storage/yukaichengLab/share/model/FLUX.2-dev/ae.safetensors
+flux2_src_path: /storage/yukaichengLab/mazijian/wth/flux2
+variant: klein-base-4b
+
+# Online Qwen3 text encoding (same conditioning path as the MoT baseline task).
+qwen3_model_spec: /storage/yukaichengLab/share/model/Qwen3-4B
+qwen_context_len: 128
+load_text_encoder: true
+
+proprio_dim: ${data.train.processor.proprio_output_dim}
+pack_proprio_after_text: true
+
+mot_checkpoint_mixed_attn: true
+mot_gqa_implementation: repeat
+mot_force_flash_attention: false
+
+action_patch_dim: ${data.train.processor.action_output_dim}
+action_patch_scale: 1.0
+
+video_scheduler:
+  train_shift: 5.0
+  infer_shift: 5.0
+  num_train_timesteps: 1000
+
+loss:
+  lambda_video: 0.5
+  lambda_action: 1.0

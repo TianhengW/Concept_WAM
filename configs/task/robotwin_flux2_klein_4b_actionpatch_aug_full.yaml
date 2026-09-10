@@ -1,0 +1,58 @@
+# @package _global_
+# action-as-patch on RoboTwin FULL no-op-filtered data + Robotwin_aug hard-task
+# augmentation (7 worst tasks, 2100 episodes converted to fastwam LeRobot v2.1).
+# Hyper-parameters are IDENTICAL to robotwin_flux2_klein_4b_actionpatch_full
+# (the fair-comparison baseline run); the ONLY change is the added aug data root
+# and its per-root nonidle filter.
+
+defaults:
+  - override /data: robotwin_omnigen2
+  - override /model: imagewam_flux2_klein_4b_actionpatch
+  - _self_
+
+data:
+  train:
+    dataset_dirs:
+      - /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0
+      - /storage/yukaichengLab/mazijian/wth/Robotwin_aug_lerobot
+    pretrained_norm_stats: /storage/yukaichengLab/share/datasets/fastwam_robotwin/dataset_stats.json
+    require_text_cache: false
+    qwen_text_cache_dir: null
+    nonidle_filter_path:
+      "/storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0": /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0/nonidle_ranges.json
+      "/storage/yukaichengLab/mazijian/wth/Robotwin_aug_lerobot": /storage/yukaichengLab/mazijian/wth/Robotwin_aug_lerobot/nonidle_ranges.json
+  val:
+    dataset_dirs:
+      - /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0
+      - /storage/yukaichengLab/mazijian/wth/Robotwin_aug_lerobot
+    pretrained_norm_stats: /storage/yukaichengLab/share/datasets/fastwam_robotwin/dataset_stats.json
+    require_text_cache: false
+    qwen_text_cache_dir: null
+    nonidle_filter_path:
+      "/storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0": /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0/nonidle_ranges.json
+      "/storage/yukaichengLab/mazijian/wth/Robotwin_aug_lerobot": /storage/yukaichengLab/mazijian/wth/Robotwin_aug_lerobot/nonidle_ranges.json
+
+# global batch = batch_size(4) * grad_accum(2) * (4 nodes * 8 gpus = 32) = 256 (same as actionpatch_full)
+batch_size: 4
+num_workers: 16
+prefetch_factor: 2
+persistent_workers: true
+keep_latest_state_only: true
+
+lr_scheduler_type: "cosine"
+learning_rate: 1e-4
+num_epochs: 5
+max_steps: null
+log_every: 10
+save_every: 1000
+eval_every: 100000
+
+gradient_accumulation_steps: 2
+weight_decay: 1e-2
+mixed_precision: "bf16"
+resume: null
+
+wandb:
+  enabled: true
+  project: imagewam
+  name: robotwin_flux2_klein_4b_actionpatch_aug_full

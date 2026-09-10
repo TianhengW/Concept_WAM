@@ -1,0 +1,35 @@
+_target_: exploration.action_img_patch.factory.create_imagewam_flux2_klein_actionpatch_vl
+
+# action-as-patch,但把冻结的 Qwen3-4B 文本编码器换成冻结的、图像 grounded 的
+# Qwen3-VL-4B-Instruct。编码 (t0 当前帧 + instruction) 取 layers(9,18,27) 拼 7680,
+# 纯编码无 reasoning。VL 全程冻结(对齐 base 冻结的 Qwen3-4B),唯一变量=编码器+看图。
+# 其余与 imagewam_flux2_klein_4b_actionpatch 逐项一致。
+
+flux2_model_path: /storage/yukaichengLab/share/model/FLUX.2-klein-base-4B/flux-2-klein-base-4b.safetensors
+ae_model_path: /storage/yukaichengLab/share/model/FLUX.2-dev/ae.safetensors
+flux2_src_path: /storage/yukaichengLab/mazijian/wth/flux2
+variant: klein-base-4b
+
+# Frozen image-grounded Qwen3-VL text encoder (replaces frozen Qwen3-4B; sees the t0 frame)
+vl_model_path: /storage/yukaichengLab/share/model/Qwen3-VL-4B-Instruct
+vl_qwen_layers: [9, 18, 27]
+vl_max_prompt_len: 128
+
+proprio_dim: ${data.train.processor.proprio_output_dim}
+pack_proprio_after_text: true
+
+mot_checkpoint_mixed_attn: true
+mot_gqa_implementation: repeat
+mot_force_flash_attention: false
+
+action_patch_dim: ${data.train.processor.action_output_dim}
+action_patch_scale: 1.0
+
+video_scheduler:
+  train_shift: 5.0
+  infer_shift: 5.0
+  num_train_timesteps: 1000
+
+loss:
+  lambda_video: 0.5
+  lambda_action: 1.0

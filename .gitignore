@@ -305,3 +305,27 @@ experiments/sae_probe/
 *.npz
 *.h5
 *.hdf5
+
+# --- macOS AppleDouble 残留（从 Mac 拷贝时产生，仓库里有 2600+ 个）---
+._*
+.DS_Store
+.msc
+
+# --- 本地临时 / 草稿，不入库 ---
+._____temp/
+scratch/
+exploration/__pycache__/
+
+# --- exploration 下的非代码产物（图、备份、日志）---
+exploration/**/*.png
+exploration/**/*.bak_*
+exploration/**/*.log
+
+# --- 外部 benchmark 树，单独 clone，见 README ---
+third_party/RoboDojo/
+third_party/Qwen2.5-Omni/
+
+# --- 评测环境快照（机器相关，无复现价值）---
+audits/eval_environment_snapshots/
+.autoresume_count
+exploration/**/.autoresume_count

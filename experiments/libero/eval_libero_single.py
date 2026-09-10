@@ -430,6 +430,31 @@ def _denormalize_action(action: torch.Tensor, processor: ImageWAMProcessor) -> n
     return denorm.numpy()
 
 
+_GRIPPER_CONV_LOGGED = False
+
+
+def _gripper_convention(cfg: DictConfig, processor: ImageWAMProcessor, action_dim: int) -> str:
+    """Which gripper convention the TRAINING data used (decides how to map the denormalized gripper to LIBERO's
+    -1 = open / +1 = close). EVALUATION.gripper_convention: 'fastwam01' (FastWAM LeRobot release: 1 = open, 0 = close),
+    'raw_pm1' (LIBERO native -1/+1, e.g. Sylvest/libero_plus_lerobot), or 'auto' = read the dataset min of the gripper
+    dim from the normalizer (min <= -0.5 -> raw_pm1, else fastwam01). Added 2026-08-28: evaluating a libero_plus-trained
+    model with the fastwam01 mapping executed the gripper fully inverted (object / libero_10 suites -> 0%)."""
+    global _GRIPPER_CONV_LOGGED
+    conv = str(cfg.EVALUATION.get("gripper_convention", "auto"))
+    if conv == "auto":
+        lo = float(_denormalize_action(torch.full((1, 1, int(action_dim)), -1.0), processor)[0][0, -1])
+        conv = "raw_pm1" if lo <= -0.5 else "fastwam01"
+        detail = f"(dataset gripper min={lo:.3f})"
+    else:
+        detail = "(explicit)"
+    if conv not in ("fastwam01", "raw_pm1"):
+        raise ValueError(f"Unknown EVALUATION.gripper_convention={conv!r}; expected auto|fastwam01|raw_pm1")
+    if not _GRIPPER_CONV_LOGGED:
+        logging.info("Gripper convention: %s %s", conv, detail)
+        _GRIPPER_CONV_LOGGED = True
+    return conv
+
+
 def _get_num_video_frames(cfg: DictConfig) -> int:
     return (int(cfg.data.train.num_frames) - 1) // int(cfg.data.train.action_video_freq_ratio) + 1
 
@@ -529,6 +554,11 @@ def _predict_action_chunk(
     else:
         num_inference_steps = int(num_inference_steps_cfg)
     prompt_template = DEFAULT_PROMPT
+    # omni B0'-gap probe: ablate the task-specific instruction (LIBERO_BLANK_INSTRUCTION=1) to
+    # measure how much the language matters on this suite (visually-determined vs language-conditioned).
+    import os as _os
+    if _os.environ.get("LIBERO_BLANK_INSTRUCTION") == "1":
+        task_description = "complete the task"
     prompt = prompt_template.format(task=task_description)
 
     image, proprio, imgs = _obs_to_model_input(
@@ -573,12 +603,15 @@ def _predict_action_chunk(
             pred = model.infer_action(**infer_kwargs)
     action = pred["action"]  # [T, D]
 
+    conv = _gripper_convention(cfg, processor, int(action.shape[-1]))
     action = _denormalize_action(action, processor)[0]  # [T, D]
 
-    # The dataloader flips the sign of the gripper action to align with other datasets
-    # (0 = close, 1 = open), so flip it back (-1 = open, +1 = close) before executing the action
-    action[..., -1] = action[..., -1] * 2 - 1
-    action = invert_gripper_action(action)
+    if conv == "fastwam01":
+        # FastWAM LeRobot release stores the gripper as 1 = open / 0 = close; map to LIBERO's -1 = open / +1 = close.
+        action[..., -1] = action[..., -1] * 2 - 1
+        action = invert_gripper_action(action)
+    else:  # raw_pm1: dataset already uses LIBERO native -1 = open / +1 = close -> execute as is
+        pass
     if bool(cfg.EVALUATION.get("binarize_gripper", False)):
         action[..., -1] = np.sign(action[..., -1])
     return action, imgs, predicted_future_frames

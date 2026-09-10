@@ -106,6 +106,7 @@ class Flux2VideoExpert(nn.Module):
         ref_image_hidden_states: torch.Tensor | None = None,
         target_img_ids: torch.Tensor | None = None,
         ref_img_ids: torch.Tensor | None = None,
+        timestep_per_token: torch.Tensor | None = None,
         **_: Any,
     ) -> Dict[str, Any]:
         if x.ndim != 3:
@@ -142,9 +143,42 @@ class Flux2VideoExpert(nn.Module):
         )
         txt_pe = transformer.pe_embedder(txt_ids)
         img_pe = transformer.pe_embedder(img_ids)
-        double_mod_img = transformer.double_stream_modulation_img(vec)
+
+        # Optional per-token timestep conditioning over the img stream
+        # ([ref | target(+action)] tokens). The stock Modulation/LastLayer
+        # broadcast token-wise when given a [B, N, hidden] vec, so no change
+        # to the FLUX.2 blocks is needed. `timestep` (scalar per sample) keeps
+        # conditioning the txt stream. Legacy calls (None) are bit-identical.
+        vec_img = None
+        if timestep_per_token is not None:
+            n_img = int(img_tokens.shape[1])
+            if timestep_per_token.ndim != 2 or int(timestep_per_token.shape[0]) != batch_size:
+                raise ValueError(
+                    f"`timestep_per_token` must be [B,{n_img}], got {tuple(timestep_per_token.shape)}"
+                )
+            if int(timestep_per_token.shape[1]) != n_img:
+                raise ValueError(
+                    f"`timestep_per_token` second dim must equal img tokens {n_img}, "
+                    f"got {tuple(timestep_per_token.shape)}"
+                )
+            flat = timestep_per_token.reshape(-1).to(dtype=timestep.dtype)
+            vec_img = transformer.time_in(timestep_embedding(flat, 256)).reshape(
+                batch_size, n_img, -1
+            )
+
+        if vec_img is None:
+            double_mod_img = transformer.double_stream_modulation_img(vec)
+            single_mod, _ = transformer.single_stream_modulation(vec)
+            vec_out = vec
+        else:
+            double_mod_img = transformer.double_stream_modulation_img(vec_img)
+            single_vec = torch.cat(
+                [vec[:, None, :].expand(batch_size, txt.shape[1], vec.shape[-1]), vec_img],
+                dim=1,
+            )
+            single_mod, _ = transformer.single_stream_modulation(single_vec)
+            vec_out = vec_img[:, cond_len:, :]
         double_mod_txt = transformer.double_stream_modulation_txt(vec)
-        single_mod, _ = transformer.single_stream_modulation(vec)
 
         if context_mask is None:
             text_mask = torch.ones(batch_size, txt.shape[1], device=img.device, dtype=torch.bool)
@@ -156,6 +190,7 @@ class Flux2VideoExpert(nn.Module):
             "freqs": {"txt": txt_pe, "img": img_pe},
             "t_mod": {
                 "vec": vec,
+                "vec_out": vec_out,
                 "double_img": double_mod_img,
                 "double_txt": double_mod_txt,
                 "single": single_mod,
@@ -179,4 +214,5 @@ class Flux2VideoExpert(nn.Module):
         cond_len = int(pre_state["cond_len"])
         target_len = int(pre_state["target_len"])
         target = img[:, cond_len : cond_len + target_len]
-        return self.transformer.final_layer(target, pre_state["t_mod"]["vec"])
+        vec_out = pre_state["t_mod"].get("vec_out", pre_state["t_mod"]["vec"])
+        return self.transformer.final_layer(target, vec_out)

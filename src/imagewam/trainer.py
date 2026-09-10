@@ -11,6 +11,8 @@ import time
 import numpy as np
 import torch
 from accelerate import Accelerator
+from accelerate.utils import InitProcessGroupKwargs, DistributedDataParallelKwargs
+from datetime import timedelta
 from omegaconf import DictConfig
 from PIL import Image
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, SequentialLR
@@ -67,11 +69,35 @@ class Wan22Trainer:
             )
         self.wandb_enabled = bool(cfg.wandb.enabled)
 
-        self.accelerator = Accelerator(
+        # Optional: enlarge the distributed collective timeout to tolerate transient
+        # multi-node NCCL straggle (set IMAGEWAM_PG_TIMEOUT_MIN; unset => Accelerate default).
+        _accel_kwargs = dict(
             gradient_accumulation_steps=self.gradient_accumulation_steps,
             mixed_precision=self.mixed_precision,
             step_scheduler_with_optimizer=False,
         )
+        _handlers = []
+        _pg_timeout_min = os.environ.get("IMAGEWAM_PG_TIMEOUT_MIN")
+        if _pg_timeout_min:
+            _handlers.append(
+                InitProcessGroupKwargs(timeout=timedelta(minutes=float(_pg_timeout_min)))
+            )
+        # Optional DDP comm tuning. Default DDP bucket is 25MB, which splits a multi-billion
+        # parameter gradient into hundreds of small all-reduces; on 4-node/32-GPU H800 this
+        # measured only 6.37 GB/s across 4x400Gb/s IB rails (3.2% of link), making the whole
+        # step communication-bound. Larger buckets emit fewer, bigger messages.
+        # Unset => unchanged behaviour.
+        _ddp_bucket_mb = os.environ.get("IMAGEWAM_DDP_BUCKET_MB")
+        if _ddp_bucket_mb:
+            _handlers.append(
+                DistributedDataParallelKwargs(
+                    bucket_cap_mb=int(_ddp_bucket_mb),
+                    gradient_as_bucket_view=True,
+                )
+            )
+        if _handlers:
+            _accel_kwargs["kwargs_handlers"] = _handlers
+        self.accelerator = Accelerator(**_accel_kwargs)
         
         logger.info(
             "Accelerate training: distributed_type=%s zero_stage=%s world_size=%d process_index=%d cfg_mixed_precision=%s accelerator_mixed_precision=%s grad_accum=%d grad_clip=%.4f",

@@ -1,0 +1,34 @@
+_target_: exploration.action_img_patch.factory.create_imagewam_flux2_klein_actionpatch_timealign
+
+# Scheme A (H3/TMRoPE study): identical to imagewam_flux2_klein_4b_actionpatch
+# except the action tokens' RoPE axis-0, which moves from the categorical
+# plane 20.0 to physical-time interpolation on the ref(10.0)->target(0.0)
+# span (interval-midpoint convention). Zero new parameters.
+
+flux2_model_path: /storage/yukaichengLab/share/model/FLUX.2-klein-base-4B/flux-2-klein-base-4b.safetensors
+ae_model_path: /storage/yukaichengLab/share/model/FLUX.2-dev/ae.safetensors
+flux2_src_path: /storage/yukaichengLab/mazijian/wth/flux2
+variant: klein-base-4b
+
+qwen3_model_spec: /storage/yukaichengLab/share/model/Qwen3-4B
+qwen_context_len: 128
+load_text_encoder: true
+
+proprio_dim: ${data.train.processor.proprio_output_dim}
+pack_proprio_after_text: true
+
+mot_checkpoint_mixed_attn: true
+mot_gqa_implementation: repeat
+mot_force_flash_attention: false
+
+action_patch_dim: ${data.train.processor.action_output_dim}
+action_patch_scale: 1.0
+
+video_scheduler:
+  train_shift: 5.0
+  infer_shift: 5.0
+  num_train_timesteps: 1000
+
+loss:
+  lambda_video: 0.5
+  lambda_action: 1.0

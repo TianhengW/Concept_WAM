@@ -1,0 +1,53 @@
+# @package _global_
+# Scheme B (action-specific sigma shift, ratio 0.25) on RoboTwin, 1/20 data.
+# MUST stay hyper-parameter-identical to robotwin_flux2_klein_4b_actionpatch_sub20
+# (the AP baseline, SR 88.0 @ 41940) except for the model: run on 1 node x 8
+# GPUs so global batch = 4 x 8 x accum 2 = 64, matching the baseline's
+# effective world size.
+
+defaults:
+  - override /data: robotwin_omnigen2
+  - override /model: imagewam_flux2_klein_4b_actionpatch_sigmashift
+  - _self_
+
+data:
+  train:
+    dataset_dirs:
+      - /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0
+    pretrained_norm_stats: /storage/yukaichengLab/share/datasets/fastwam_robotwin/dataset_stats.json
+    require_text_cache: false
+    qwen_text_cache_dir: null
+    nonidle_filter_path: /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0/nonidle_ranges.json
+    sample_index_stride: 20
+  val:
+    dataset_dirs:
+      - /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0
+    pretrained_norm_stats: /storage/yukaichengLab/share/datasets/fastwam_robotwin/dataset_stats.json
+    require_text_cache: false
+    qwen_text_cache_dir: null
+    nonidle_filter_path: /storage/yukaichengLab/share/datasets/fastwam_robotwin/robotwin2.0/nonidle_ranges.json
+    sample_index_stride: 20
+
+batch_size: 4
+num_workers: 16
+prefetch_factor: 2
+persistent_workers: true
+keep_latest_state_only: true
+
+lr_scheduler_type: "cosine"
+learning_rate: 1e-4
+num_epochs: 10
+max_steps: null
+log_every: 10
+save_every: 2500
+eval_every: 100000
+
+gradient_accumulation_steps: 2
+weight_decay: 1e-2
+mixed_precision: "bf16"
+resume: null
+
+wandb:
+  enabled: true
+  project: imagewam
+  name: robotwin_flux2_klein_4b_actionpatch_sigmashift_sub20

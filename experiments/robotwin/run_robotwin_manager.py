@@ -178,6 +178,14 @@ class RunningState:
     gpu_id: int
     phase: str  # "clean" | "random"
     process: subprocess.Popen[str]
+    launch_time: float = 0.0
+
+
+# Hard per-worker wall-clock timeout. curobo/warp C-extension deadlocks make a
+# worker hang forever (Python SIGALRM can't interrupt native code), which the
+# main loop would otherwise wait on indefinitely. A worker that runs longer than
+# this is SIGKILLed and its (task, phase) is scored 0.0 so the eval completes.
+HARD_TIMEOUT_SEC = float(os.environ.get("ROBOTWIN_TASK_HARD_TIMEOUT_S", "900"))
 
 
 @hydra.main(version_base="1.3", config_path="../../configs", config_name="sim_robotwin.yaml")
@@ -278,6 +286,7 @@ def main(cfg: DictConfig):
             gpu_id=gpu_id,
             phase=phase,
             process=process,
+            launch_time=time.time(),
         )
 
     def terminate_all_running() -> None:
@@ -378,16 +387,51 @@ def main(cfg: DictConfig):
             gpu_id = state.gpu_id
             return_code = state.process.poll()
             if return_code is None:
+                # Hard timeout: a worker running past HARD_TIMEOUT_SEC is a
+                # curobo/warp C-extension deadlock. SIGKILL it, score 0.0, and
+                # keep the eval going (do NOT trip has_failure).
+                if time.time() - state.launch_time > HARD_TIMEOUT_SEC:
+                    log(
+                        f"HARD TIMEOUT killing task={state.task_name} phase={state.phase} "
+                        f"gpu={gpu_id} after {HARD_TIMEOUT_SEC:.0f}s -> scored 0.0"
+                    )
+                    state.process.kill()
+                    try:
+                        state.process.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    running_states.remove(state)
+                    progressed = True
+                    task_rates[state.task_name][state.phase] = 0.0
+                    failed_records.append(
+                        {
+                            "task_name": state.task_name,
+                            "phase": state.phase,
+                            "gpu_id": gpu_id,
+                            "return_code": -9,
+                            "reason": "hard_timeout_killed",
+                        }
+                    )
+                    log(
+                        f"done task={state.task_name} phase={state.phase} gpu={gpu_id} "
+                        f"success_rate=0.0000"
+                    )
+                    next_phase = phase_to_next_phase[state.phase]
+                    if next_phase is not None:
+                        running_states.append(launch_phase(
+                            task_name=state.task_name,
+                            gpu_id=gpu_id,
+                            phase=next_phase,
+                        ))
+                    else:
+                        try_launch_pending(gpu_id)
                 continue
             progressed = True
             running_states.remove(state)
 
             if return_code != 0:
-                has_failure = True
-                failure_message = (
-                    f"worker failed: task={state.task_name}, phase={state.phase}, "
-                    f"gpu={gpu_id}, return_code={return_code}"
-                )
+                # Worker crashed (non-zero exit) -> score this (task,phase) 0.0
+                # and keep going, instead of aborting the whole eval.
                 failed_records.append(
                     {
                         "task_name": state.task_name,
@@ -397,20 +441,29 @@ def main(cfg: DictConfig):
                         "reason": "process_failed",
                     }
                 )
-                log(failure_message)
-                terminate_all_running()
-                running_states.clear()
-                break
+                task_rates[state.task_name][state.phase] = 0.0
+                log(
+                    f"worker failed (scored 0.0): task={state.task_name} "
+                    f"phase={state.phase} gpu={gpu_id} return_code={return_code}"
+                )
+                log(
+                    f"done task={state.task_name} phase={state.phase} gpu={gpu_id} "
+                    f"success_rate=0.0000"
+                )
+                next_phase = phase_to_next_phase[state.phase]
+                if next_phase is not None:
+                    running_states.append(launch_phase(
+                        task_name=state.task_name, gpu_id=gpu_id, phase=next_phase,
+                    ))
+                else:
+                    try_launch_pending(gpu_id)
+                continue
 
             result_file = run_output_dir / state.task_name / _phase_result_filename(state.phase)
             try:
                 success_rate = _parse_success_rate(result_file)
             except Exception as exc:
-                has_failure = True
-                failure_message = (
-                    f"result parse failed: task={state.task_name}, phase={state.phase}, "
-                    f"gpu={gpu_id}, error={repr(exc)}"
-                )
+                # Result missing/unparseable -> score 0.0 and keep going.
                 failed_records.append(
                     {
                         "task_name": state.task_name,
@@ -420,10 +473,23 @@ def main(cfg: DictConfig):
                         "reason": "result_parse_failed",
                     }
                 )
-                log(failure_message)
-                terminate_all_running()
-                running_states.clear()
-                break
+                task_rates[state.task_name][state.phase] = 0.0
+                log(
+                    f"result parse failed (scored 0.0): task={state.task_name} "
+                    f"phase={state.phase} gpu={gpu_id} error={repr(exc)}"
+                )
+                log(
+                    f"done task={state.task_name} phase={state.phase} gpu={gpu_id} "
+                    f"success_rate=0.0000"
+                )
+                next_phase = phase_to_next_phase[state.phase]
+                if next_phase is not None:
+                    running_states.append(launch_phase(
+                        task_name=state.task_name, gpu_id=gpu_id, phase=next_phase,
+                    ))
+                else:
+                    try_launch_pending(gpu_id)
+                continue
 
             task_rates[state.task_name][state.phase] = success_rate
             log(

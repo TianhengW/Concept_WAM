@@ -1652,6 +1652,19 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
                     if self.hetero_bridge is not None
                     else delta_timestamps
                 )
+                # Per-root non-idle filter: a dict/DictConfig maps dataset_dir -> filter
+                # path (episode keys inside each filter JSON are LOCAL to that root).
+                # A plain str/Path keeps the legacy single-root behavior unchanged.
+                if nonidle_filter_path is not None and not isinstance(nonidle_filter_path, (str, Path)):
+                    _missing = object()
+                    child_nonidle_filter_path = nonidle_filter_path.get(ds_name, _missing)
+                    if child_nonidle_filter_path is _missing:
+                        raise ValueError(
+                            f"nonidle_filter_path dict has no entry for dataset_dir {ds_name!r}; "
+                            "add an explicit null value to disable filtering for this root."
+                        )
+                else:
+                    child_nonidle_filter_path = nonidle_filter_path
                 _dataset = LeRobotDataset(
                     ds_name,
                     root=ds_root,
@@ -1661,7 +1674,7 @@ class MultiLeRobotDataset(torch.utils.data.Dataset):
                     tolerance_s=self.tolerances_s[ds_name],
                     download_videos=download_videos,
                     video_backend=video_backend,
-                    nonidle_filter_path=nonidle_filter_path,
+                    nonidle_filter_path=child_nonidle_filter_path,
                     load_stats_metadata=self.hetero_bridge is None,
                     cached_metadata=(
                         lerobot_meta_cache.get(str(ds_root.expanduser().resolve()))
