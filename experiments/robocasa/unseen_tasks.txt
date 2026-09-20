@@ -1,0 +1,16 @@
+ArrangeBreadBasket
+ArrangeTea
+BreadSelection
+CategorizeCondiments
+CuttingToolSelection
+GarnishPancake
+GatherTableware
+HeatKebabSandwich
+MakeIceLemonade
+PanTransfer
+PortionHotDogs
+RecycleBottlesByType
+SeparateFreezerRack
+WaffleReheat
+WashFruitColander
+WeighIngredients

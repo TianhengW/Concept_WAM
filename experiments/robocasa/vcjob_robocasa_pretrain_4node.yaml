@@ -1,0 +1,193 @@
+# action-as-patch RoboCasa365 PRETRAIN (Human300): 4-node x 8 GPU Volcano job.
+# batch_size set in configs/task/robocasa_flux2_klein_4b_actionpatch_pretrain.yaml
+# (tuned to >=80% of 140G in the smoke test).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aap-robocasa-pre-4node-scripts
+  namespace: dreamzero-training
+data:
+  train.sh: |
+    #!/bin/bash
+    set -e -o pipefail
+    export TZ=Asia/Shanghai
+    ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime 2>/dev/null || true
+    ntpdate ntp.aliyun.com 2>/dev/null || ntpdate cn.pool.ntp.org 2>/dev/null || true
+
+    # image ships python3 only; train_ddp.sh's RUN_ID sync calls bare `python`
+    ln -sf "$(command -v python3)" /usr/local/bin/python
+    pip install -q -i https://pypi.tuna.tsinghua.edu.cn/simple imageio imageio-ffmpeg diffusers rich pyrallis openai invisible-watermark opencv-python-headless scipy huggingface_hub 2>&1 | tail -1
+
+    REPO=/mnt/auwomo-data/wangtianheng/codes/action-as-patch
+    EXP_DIR=${REPO}/experiments/robocasa
+    LOG_DIR=${EXP_DIR}/logs
+    mkdir -p ${LOG_DIR}
+    LOG_FILE=${LOG_DIR}/node${RANK}.log
+
+    # === experiment env (paths on shared storage) ===
+    export AAP_FLUX2_KLEIN=/mnt/auwomo-data/auwomo-model/ImageWAM/FLUX.2-klein-base-4B/flux-2-klein-base-4b.safetensors
+    export AAP_FLUX2_AE=/mnt/auwomo-data/auwomo-model/ImageWAM/FLUX.2-dev/ae.safetensors
+    export AAP_QWEN3=/mnt/auwomo-data/auwomo-model/Qwen3-4B
+    export FLUX2_SRC=${REPO}
+    export HF_HUB_OFFLINE=1
+    export WANDB_MODE=offline
+    # DDP, not deepspeed (deepspeed engine NaNs on this cluster; see C2R notes)
+    export ZERO_STAGE=0
+    export TASK=robocasa_flux2_klein_4b_actionpatch_pretrain
+
+    # === NCCL / comm env (validated on this cluster, do not change casually) ===
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    export OMP_NUM_THREADS=12
+    export TORCHDYNAMO_DISABLE=1
+    export TORCH_NCCL_AVOID_RECORD_STREAMS=1
+    export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800
+    export NCCL_TIMEOUT=1800000
+    export NCCL_IB_DISABLE=0
+    export NCCL_SOCKET_IFNAME=eth0
+    export GLOO_SOCKET_IFNAME=eth0
+    export NCCL_DEBUG=WARN
+
+    # === multi-node wiring: Volcano pytorch plugin injects RANK/MASTER_ADDR/MASTER_PORT ===
+    export NNODES=4
+    export NODE_RANK=${RANK}
+    # workers may start many minutes before the master finishes pulling the image
+    export RUN_ID_SYNC_TIMEOUT=3600
+
+    cd ${REPO}
+    bash scripts/flux2/train_flux2_klein_imagewam.sh 8 wandb.enabled=false 2>&1 | tee -a ${LOG_FILE}
+---
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: aap-robocasa-pre-4node
+  namespace: dreamzero-training
+spec:
+  schedulerName: volcano
+  queue: que-1b0ccceacaca
+  minAvailable: 4
+  plugins:
+    svc: []
+    env: []
+    pytorch:
+      - --master=master
+      - --worker=worker
+      - --port=23456
+  tasks:
+    - name: master
+      replicas: 1
+      policies:
+        - event: TaskCompleted
+          action: CompleteJob
+        - event: PodFailed
+          action: AbortJob
+      template:
+        spec:
+          imagePullSecrets:
+            - name: registry-secret
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values: ["10.184.0.30","10.184.0.21","10.184.0.45","10.184.0.25"]
+          tolerations:
+            - key: cloud.d-robotics.cc/queue-name
+              operator: Equal
+              value: que-1b0ccceacaca
+              effect: NoSchedule
+            - key: cloud.d-robotics.cc/node-type
+              operator: Equal
+              value: gpu
+              effect: NoSchedule
+          containers:
+            - name: trainer
+              image: registry.d-robotics.cc/auwomo-auwomo/aap-c2r-train:v1
+              command: [/bin/bash, /scripts/train.sh]
+              resources:
+                limits:
+                  nvidia.com/gpu: 8
+                  rdma/hca: 8
+                requests:
+                  nvidia.com/gpu: 8
+                  rdma/hca: 8
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                - name: shared-data
+                  mountPath: /mnt/auwomo-data
+                - name: shm
+                  mountPath: /dev/shm
+          volumes:
+            - name: scripts
+              configMap:
+                name: aap-robocasa-pre-4node-scripts
+                defaultMode: 0755
+            - name: shared-data
+              hostPath:
+                path: /mnt/auwomo-data
+                type: Directory
+            - name: shm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 64Gi
+          restartPolicy: Never
+    - name: worker
+      replicas: 3
+      policies:
+        - event: PodFailed
+          action: AbortJob
+      template:
+        spec:
+          imagePullSecrets:
+            - name: registry-secret
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values: ["10.184.0.30","10.184.0.21","10.184.0.45","10.184.0.25"]
+          tolerations:
+            - key: cloud.d-robotics.cc/queue-name
+              operator: Equal
+              value: que-1b0ccceacaca
+              effect: NoSchedule
+            - key: cloud.d-robotics.cc/node-type
+              operator: Equal
+              value: gpu
+              effect: NoSchedule
+          containers:
+            - name: trainer
+              image: registry.d-robotics.cc/auwomo-auwomo/aap-c2r-train:v1
+              command: [/bin/bash, /scripts/train.sh]
+              resources:
+                limits:
+                  nvidia.com/gpu: 8
+                  rdma/hca: 8
+                requests:
+                  nvidia.com/gpu: 8
+                  rdma/hca: 8
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                - name: shared-data
+                  mountPath: /mnt/auwomo-data
+                - name: shm
+                  mountPath: /dev/shm
+          volumes:
+            - name: scripts
+              configMap:
+                name: aap-robocasa-pre-4node-scripts
+                defaultMode: 0755
+            - name: shared-data
+              hostPath:
+                path: /mnt/auwomo-data
+                type: Directory
+            - name: shm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 64Gi
+          restartPolicy: Never

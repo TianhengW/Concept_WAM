@@ -1,0 +1,18 @@
+# @package _group_
+dataset_dirs:
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/DeliverStraw/20250813/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/GetToastedBread/20250812/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/KettleBoiling/20250814/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/LoadDishwasher/20250811/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/PackIdenticalLunches/20250815/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/PreSoakPan/20250809/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/PrepareCoffee/20250812/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/RinseSinkBasin/20250816/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/ScrubCuttingBoard/20250816/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/SearingMeat/20250812/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/SetUpCuttingStation/20250817/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/StackBowlsCabinet/20250815/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/SteamInMicrowave/20250814/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/StirVegetables/20250814/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/StoreLeftoversInBowl/20250813/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/WashLettuce/20250814/lerobot'

@@ -1,0 +1,16 @@
+DeliverStraw
+GetToastedBread
+KettleBoiling
+LoadDishwasher
+PackIdenticalLunches
+PreSoakPan
+PrepareCoffee
+RinseSinkBasin
+ScrubCuttingBoard
+SearingMeat
+SetUpCuttingStation
+StackBowlsCabinet
+SteamInMicrowave
+StirVegetables
+StoreLeftoversInBowl
+WashLettuce

@@ -1,0 +1,151 @@
+train:
+  _target_: imagewam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
+  dataset_dirs: ???
+  shape_meta:
+    images:
+      # 3-cam "robotwin" compact layout: top = agentview_left,
+      # bottom-left = agentview_right, bottom-right = eye_in_hand.
+      - key: robot0_agentview_left
+        raw_shape: [3, 256, 256]
+        shape: [3, 256, 256]
+      - key: robot0_agentview_right
+        raw_shape: [3, 256, 256]
+        shape: [3, 256, 256]
+      - key: robot0_eye_in_hand
+        raw_shape: [3, 256, 256]
+        shape: [3, 256, 256]
+    action:
+      - key: default
+        raw_shape: 12 # PandaOmron mobile manipulation
+        shape: 12
+    state:
+      - key: default
+        raw_shape: 16
+        shape: 16
+  num_frames: 17
+  global_sample_stride: 1
+  action_video_freq_ratio: 1 # 16 action, 16 video frames
+  video_size: [288, 256] # final resize video
+  camera_key: null
+  val_set_proportion: 0.01
+  is_training_set: true
+  pretrained_norm_stats: null # per-root LeRobot meta stats
+  skip_padding_as_possible: false
+  concat_multi_camera: "robotwin"
+  robotwin_camera_layout: "compact_288x256"
+  video_augmentation:
+    _target_: imagewam.datasets.lerobot.transforms.image.VideoAugmentation
+    p: 0.5
+    augment_types: [corrupt_only, color_only, both]
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.03
+    gamma:
+      range: [0.9, 1.1]
+    gaussian_noise:
+      std: 0.01
+    random_resized_crop:
+      scale: [0.95, 1.0]
+      ratio: preserve
+    rotate:
+      degrees: 5.0
+      fill: mean
+  require_text_cache: false
+  endpoint_frames_only: true
+  nonidle_filter_path: null
+  qwen_text_cache_dir: null
+  qwen_context_len: 128
+  processor:
+    _target_: imagewam.datasets.lerobot.processors.imagewam_processor.ImageWAMProcessor
+    shape_meta: ${data.train.shape_meta}
+    num_obs_steps: ${data.train.num_frames}
+    image_obs_steps: 2
+    num_output_cameras: 3
+    action_output_dim: 12
+    proprio_output_dim: 16
+
+    # action & state normalization (same convention as the RoboTwin line)
+    action_state_transforms: null
+    use_stepwise_action_norm: False
+    norm_default_mode: "z-score"
+    norm_exception_mode: null
+
+    action_state_merger:
+      _target_: imagewam.datasets.lerobot.transforms.action_state_merger.ConcatLeftAlign
+
+    train_transforms:
+      - _target_: imagewam.datasets.lerobot.transforms.image.ToTensor
+      - _target_: torchvision.transforms.Resize
+        size: [256, 256]
+    val_transforms:
+      - _target_: imagewam.datasets.lerobot.transforms.image.ToTensor
+      - _target_: torchvision.transforms.Resize
+        size: [256, 256]
+  text_embedding_cache_dir: null
+  context_len: 128
+
+val:
+  _target_: imagewam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
+  dataset_dirs: ???
+  shape_meta:
+    images:
+      - key: robot0_agentview_left
+        raw_shape: [3, 256, 256]
+        shape: [3, 256, 256]
+      - key: robot0_agentview_right
+        raw_shape: [3, 256, 256]
+        shape: [3, 256, 256]
+      - key: robot0_eye_in_hand
+        raw_shape: [3, 256, 256]
+        shape: [3, 256, 256]
+    action:
+      - key: default
+        raw_shape: 12
+        shape: 12
+    state:
+      - key: default
+        raw_shape: 16
+        shape: 16
+  num_frames: 17
+  global_sample_stride: 1
+  action_video_freq_ratio: 1
+  video_size: [288, 256]
+  camera_key: null
+  val_set_proportion: 0.01
+  is_training_set: false
+  pretrained_norm_stats: null
+  skip_padding_as_possible: false
+  concat_multi_camera: "robotwin"
+  robotwin_camera_layout: "compact_288x256"
+  video_augmentation: null
+  require_text_cache: false
+  endpoint_frames_only: true
+  nonidle_filter_path: null
+  qwen_text_cache_dir: null
+  qwen_context_len: 128
+  processor:
+    _target_: imagewam.datasets.lerobot.processors.imagewam_processor.ImageWAMProcessor
+    shape_meta: ${data.train.shape_meta}
+    num_obs_steps: ${data.train.num_frames}
+    image_obs_steps: 2
+    num_output_cameras: 3
+    action_output_dim: 12
+    proprio_output_dim: 16
+    action_state_transforms: null
+    use_stepwise_action_norm: False
+    norm_default_mode: "z-score"
+    norm_exception_mode: null
+    action_state_merger:
+      _target_: imagewam.datasets.lerobot.transforms.action_state_merger.ConcatLeftAlign
+    train_transforms:
+      - _target_: imagewam.datasets.lerobot.transforms.image.ToTensor
+      - _target_: torchvision.transforms.Resize
+        size: [256, 256]
+    val_transforms:
+      - _target_: imagewam.datasets.lerobot.transforms.image.ToTensor
+      - _target_: torchvision.transforms.Resize
+        size: [256, 256]
+  text_embedding_cache_dir: null
+  context_len: 128

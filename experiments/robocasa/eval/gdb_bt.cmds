@@ -1,0 +1,9 @@
+set pagination off
+set confirm off
+run
+echo \n=== BACKTRACE ===\n
+bt 40
+echo \n=== SHARED LIBS (GL/EGL/mujoco) ===\n
+info sharedlibrary
+echo \n=== THREADS ===\n
+thread apply all bt 6

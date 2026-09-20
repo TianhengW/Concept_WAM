@@ -1,0 +1,18 @@
+# @package _group_
+dataset_dirs:
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/ArrangeBreadBasket/20250809/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/ArrangeTea/20250812/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/BreadSelection/20250815/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/CategorizeCondiments/20250814/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/CuttingToolSelection/20250814/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/GarnishPancake/20250815/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/GatherTableware/20250815/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/HeatKebabSandwich/20250813/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/MakeIceLemonade/20250813/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/PanTransfer/20250817/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/PortionHotDogs/20250816/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/RecycleBottlesByType/20250812/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/SeparateFreezerRack/20250815/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/WaffleReheat/20250817/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/WashFruitColander/20250811/lerobot'
+  - '/storage/yukaichengLab/share/datasets/robocasa365/target/composite/WeighIngredients/20250812/lerobot'
